@@ -4,6 +4,8 @@ A pixel-faithful recreation of the classic Winamp 2.x music player, written
 in C11 with SDL2. This is a full rewrite of the Python/Qt "nixamp" project
 with the same feature set and window-for-window architecture.
 
+![kilix-amp playing Raleigh Soliloquy Pt. I](docs/screenshot.png)
+
 ## Features
 
 - **Classic Winamp 2.x UI** - Bitmap-based skin rendering with all the classic elements
