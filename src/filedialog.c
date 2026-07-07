@@ -64,18 +64,35 @@ static char *fallback_prompt(const char *title, const char *initial)
     return *path ? ka_strdup(path) : NULL;
 }
 
+/* zenity --filename fragment so the picker opens IN ~/Music (trailing slash),
+ * or "" when $HOME is unset. Caller frees. */
+static char *default_dir_arg(void)
+{
+    const char *home = getenv("HOME");
+    if (!home || !*home)
+        return ka_strdup("");
+    char *dir = ka_asprintf("%s/Music/", home);
+    char *q = shell_quote(dir);
+    char *arg = ka_asprintf("--filename=%s ", q);
+    free(q);
+    free(dir);
+    return arg;
+}
+
 char **filedialog_open_files(const char *title, int *count)
 {
     *count = 0;
     char *result = NULL;
     if (have_zenity()) {
         char *qt = shell_quote(title);
+        char *dd = default_dir_arg();
         char *cmd = ka_asprintf(
-            "zenity --file-selection --multiple --separator='\\n' "
+            "zenity --file-selection --multiple --separator='\\n' %s"
             "--title=%s 2>/dev/null",
-            qt);
+            dd, qt);
         result = run_zenity(cmd);
         free(cmd);
+        free(dd);
         free(qt);
     } else {
         result = fallback_prompt(title, "");
@@ -109,10 +126,12 @@ char *filedialog_open_file(const char *title)
 {
     if (have_zenity()) {
         char *qt = shell_quote(title);
+        char *dd = default_dir_arg();
         char *cmd = ka_asprintf(
-            "zenity --file-selection --title=%s 2>/dev/null", qt);
+            "zenity --file-selection %s--title=%s 2>/dev/null", dd, qt);
         char *result = run_zenity(cmd);
         free(cmd);
+        free(dd);
         free(qt);
         return result;
     }
