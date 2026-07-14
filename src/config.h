@@ -1,5 +1,6 @@
-/* Settings persistence (INI file at ~/.config/kilix-amp/kilix-amp.ini).
- * Port of nixamp lib/config.py; keys use "section/name" form like QSettings. */
+/* Settings persistence (INI file below $XDG_CONFIG_HOME, falling back to
+ * ~/.config/kilix-amp/kilix-amp.ini). Port of nixamp lib/config.py; keys use
+ * "section/name" form like QSettings. */
 #ifndef KA_CONFIG_H
 #define KA_CONFIG_H
 

@@ -88,6 +88,9 @@ static void load_file(Config *cfg)
 
 static char *default_path(void)
 {
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg)
+        return ka_asprintf("%s/kilix-amp/kilix-amp.ini", xdg);
     const char *home = getenv("HOME");
     if (!home)
         home = ".";

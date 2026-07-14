@@ -68,8 +68,10 @@ The UI scale can also be changed at runtime from the right-click menu
 (SIZE section) or by pressing `D` (cycles 1x-4x); it persists across runs.
 
 On first start a default skin is generated at
-`~/.local/share/kilix-amp/skins/default`. Settings are saved to
-`~/.config/kilix-amp/kilix-amp.ini` (same INI layout as nixamp's config).
+`${XDG_DATA_HOME:-~/.local/share}/kilix-amp/skins/default`. Settings are saved
+to `${XDG_CONFIG_HOME:-~/.config}/kilix-amp/kilix-amp.ini` (the same INI
+layout as nixamp's config). This lets desktop hosts give Kilix-Amp isolated,
+persistent storage without changing `HOME`.
 
 ## Keyboard Shortcuts
 

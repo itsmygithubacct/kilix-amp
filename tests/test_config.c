@@ -89,6 +89,35 @@ static void test_malformed_values(void)
     free(path);
 }
 
+static void test_default_path_honors_xdg_config_home(void)
+{
+    const char *old = getenv("XDG_CONFIG_HOME");
+    char *saved = old ? ka_strdup(old) : NULL;
+    char *xdg = ka_path_join(g_dir, "xdg-config");
+    setenv("XDG_CONFIG_HOME", xdg, 1);
+
+    Config *c = config_open(NULL);
+    config_set_volume(c, 37);
+    ASSERT_TRUE(config_sync(c));
+    config_close(c);
+
+    char *app_dir = ka_path_join(xdg, "kilix-amp");
+    char *path = ka_path_join(app_dir, "kilix-amp.ini");
+    ASSERT_TRUE(ka_is_file(path));
+    Config *saved_config = config_open(path);
+    ASSERT_EQ_INT(config_volume(saved_config), 37);
+    config_close(saved_config);
+
+    if (saved)
+        setenv("XDG_CONFIG_HOME", saved, 1);
+    else
+        unsetenv("XDG_CONFIG_HOME");
+    free(saved);
+    free(path);
+    free(app_dir);
+    free(xdg);
+}
+
 int main(void)
 {
     g_dir = kt_tmpdir();
@@ -96,5 +125,6 @@ int main(void)
     RUN(test_roundtrip);
     RUN(test_bool_forms);
     RUN(test_malformed_values);
+    RUN(test_default_path_honors_xdg_config_home);
     return kt_summary("test_config");
 }
