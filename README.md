@@ -25,15 +25,26 @@ Runtime/build libraries (Debian package names):
 
 ```bash
 sudo apt install build-essential libsdl2-dev libsdl2-image-dev \
-    libsndfile1-dev zlib1g-dev
+    libsndfile1-dev zlib1g-dev libfluidsynth-dev fluidsynth \
+    fluid-soundfont-gm
 # optional, for native file-open dialogs:
 sudo apt install zenity
 ```
 
-Audio decoding goes through libsndfile: WAV, FLAC, Ogg/Vorbis, Opus, MP3
-(libsndfile >= 1.1), AIFF and friends. Formats libsndfile cannot open
-(m4a/aac/wma) are skipped with an error title, and the playlist auto-skips
-to the next track.
+Or run:
+
+```bash
+./install-deps.sh
+```
+
+Audio decoding goes through libsndfile for WAV, FLAC, Ogg/Vorbis, Opus, MP3
+(libsndfile >= 1.1), AIFF and friends. MIDI files (`.mid`/`.midi`) are
+rendered through FluidSynth using a GM SoundFont, then played through the same
+SDL/EQ/volume pipeline as decoded audio. Set `KILIX_AMP_SOUNDFONT=/path/to.sf2`
+to override the default SoundFont search.
+
+Formats libsndfile cannot open (m4a/aac/wma) are skipped with an error title,
+and the playlist auto-skips to the next track.
 
 ## Building
 
@@ -84,7 +95,7 @@ On first start a default skin is generated at
 
 | Module | Purpose |
 |--------|---------|
-| `src/audio.c` | playback engine: libsndfile decode -> preamp/EQ/volume/pan -> SDL queued audio |
+| `src/audio.c` | playback engine: libsndfile decode or FluidSynth MIDI render -> preamp/EQ/volume/pan -> SDL queued audio |
 | `src/dsp.c` | in-house radix-2 FFT + biquad peaking filters |
 | `src/effects.c` | 21 editor effects/generators (scipy replaced in-house) |
 | `src/audio_data.c` | editor buffer with selection + undo/redo |
@@ -114,8 +125,9 @@ On first start a default skin is generated at
   in a single popup.
 - **File dialogs use zenity** when installed, otherwise a text-entry path
   prompt.
-- **Decoding is libsndfile-based** instead of GStreamer, so codec coverage
-  differs slightly (no m4a/wma).
+- **Decoding is libsndfile-based** instead of GStreamer, with native
+  FluidSynth rendering for MIDI, so codec coverage differs slightly
+  (no m4a/wma).
 - **Pitch shift uses linear resampling** instead of scipy's FFT resampler;
   audibly equivalent for the +-12 semitone UI range.
 - Everything else - window layout, skin coordinates, EQ curve math,

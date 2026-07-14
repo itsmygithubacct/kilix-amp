@@ -299,6 +299,8 @@ static void test_is_audio_ext(void)
     ASSERT_TRUE(playlist_is_audio_ext("/x/y.mp3"));
     ASSERT_TRUE(playlist_is_audio_ext("/x/y.FLAC"));
     ASSERT_TRUE(playlist_is_audio_ext("y.opus"));
+    ASSERT_TRUE(playlist_is_audio_ext("song.MID"));
+    ASSERT_TRUE(playlist_is_audio_ext("song.midi"));
     ASSERT_FALSE(playlist_is_audio_ext("y.txt"));
     ASSERT_FALSE(playlist_is_audio_ext("y"));
 }

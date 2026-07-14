@@ -40,26 +40,92 @@ typedef struct {
     /* Guards against an all-bad playlist looping forever under
      * REPEAT_ALL. */
     int auto_skip_count;
+    bool pending_play;
+    int pending_play_index;
 } App;
 
 /* --- Core playback actions --- */
 
-static void play_current(App *app)
+static void set_loading_title(App *app, Track *track)
+{
+    char *disp = track_display_title(track);
+    char *title = ka_asprintf("LOADING: %s", disp);
+    main_window_set_title(&app->main_win, title);
+    free(title);
+    free(disp);
+}
+
+static void show_playlist(App *app)
+{
+    if (!app->pl_win.kw.visible)
+        kwin_show(&app->pl_win.kw);
+    int px, py, pw, ph;
+    kwin_get_pos(&app->pl_win.kw, &px, &py);
+    kwin_get_size(&app->pl_win.kw, &pw, &ph);
+    SDL_Rect pl_rect = {px, py, pw, ph};
+    bool on_screen = false;
+    int displays = SDL_GetNumVideoDisplays();
+    for (int i = 0; i < displays && !on_screen; i++) {
+        SDL_Rect geo;
+        if (SDL_GetDisplayUsableBounds(i, &geo) == 0)
+            on_screen = SDL_HasIntersection(&pl_rect, &geo);
+    }
+    if (!on_screen) {
+        SDL_Rect geo;
+        if (SDL_GetDisplayUsableBounds(0, &geo) == 0) {
+            int mx, my, mw, mh;
+            kwin_get_pos(&app->main_win.kw, &mx, &my);
+            kwin_get_size(&app->main_win.kw, &mw, &mh);
+            int y = my + mh;
+            if (y + ph > geo.y + geo.h)
+                y = geo.y + 20;
+            kwin_set_pos(&app->pl_win.kw, mx, y);
+        }
+    }
+    config_set_pl_visible(app->config, true);
+    main_window_set_pl_visible(&app->main_win, true);
+}
+
+static void render_visible_windows(App *app)
+{
+    if (app->main_win.kw.visible)
+        main_window_render(&app->main_win);
+    if (app->eq_win.kw.visible)
+        eq_window_render(&app->eq_win);
+    if (app->pl_win.kw.visible)
+        playlist_window_render(&app->pl_win);
+    if (app->ed_win.kw.visible)
+        editor_window_render(&app->ed_win);
+}
+
+static void queue_current(App *app)
 {
     Track *track = playlist_current_track(app->playlist);
     if (!track && playlist_count(app->playlist) > 0)
         track = playlist_set_current(app->playlist, 0);
     if (track) {
-        audio_load(app->audio, track->filepath);
-        audio_play(app->audio);
-        char *disp = track_display_title(track);
-        main_window_set_title(&app->main_win, disp);
-        free(disp);
+        app->pending_play_index = playlist_current_index(app->playlist);
+        app->pending_play = true;
+        set_loading_title(app, track);
     }
 }
 
-static void play_track(App *app, Track *track)
+static void queue_track(App *app, Track *track)
 {
+    if (!track)
+        return;
+    app->pending_play_index = playlist_current_index(app->playlist);
+    app->pending_play = true;
+    set_loading_title(app, track);
+}
+
+static void play_pending(App *app)
+{
+    if (!app->pending_play)
+        return;
+    app->pending_play = false;
+
+    Track *track = playlist_set_current(app->playlist, app->pending_play_index);
     if (!track)
         return;
     audio_load(app->audio, track->filepath);
@@ -75,7 +141,7 @@ static void on_play(void *ud)
     if (strcmp(audio_state(app->audio), "paused") == 0)
         audio_pause(app->audio); /* unpause */
     else
-        play_current(app);
+        queue_current(app);
 }
 
 static void on_pause(void *ud)
@@ -94,13 +160,13 @@ static void on_stop(void *ud)
 static void on_prev(void *ud)
 {
     App *app = ud;
-    play_track(app, playlist_prev_track(app->playlist));
+    queue_track(app, playlist_prev_track(app->playlist));
 }
 
 static void on_next(void *ud)
 {
     App *app = ud;
-    play_track(app, playlist_next_track(app->playlist));
+    queue_track(app, playlist_next_track(app->playlist));
 }
 
 static void on_eject(void *ud)
@@ -115,7 +181,9 @@ static void on_eject(void *ud)
     int added = playlist_count(app->playlist) - before;
     if (playlist_current_index(app->playlist) < 0 && added > 0)
         playlist_set_current(app->playlist, before);
-    play_current(app);
+    if (added > 0)
+        show_playlist(app);
+    queue_current(app);
     for (int i = 0; i < count; i++)
         free(files[i]);
     free(files);
@@ -168,7 +236,7 @@ static void on_eos(void *ud)
     App *app = ud;
     Track *track = playlist_next_track(app->playlist);
     if (track)
-        play_track(app, track);
+        queue_track(app, track);
     else
         main_window_set_play_state(&app->main_win, "stopped");
 }
@@ -188,7 +256,7 @@ static void on_error(void *ud, const char *msg)
     app->auto_skip_count++;
     Track *track = playlist_next_track(app->playlist);
     if (track)
-        play_track(app, track);
+        queue_track(app, track);
     else
         app->auto_skip_count = 0;
 }
@@ -322,7 +390,7 @@ static void on_quit_requested(void *ud)
 static void on_track_activated(void *ud, int idx)
 {
     App *app = ud;
-    play_track(app, playlist_set_current(app->playlist, idx));
+    queue_track(app, playlist_set_current(app->playlist, idx));
 }
 
 static void on_add_files(void *ud)
@@ -897,8 +965,12 @@ int main(int argc, char **argv)
         else if (ka_is_file(files[i]))
             playlist_add_file(app->playlist, files[i]);
     }
-    if (n_files > 0 && playlist_count(app->playlist) > 0)
-        play_current(app);
+    if (n_files > 0 && playlist_count(app->playlist) > 0) {
+        show_playlist(app);
+        if (playlist_current_index(app->playlist) < 0)
+            playlist_set_current(app->playlist, 0);
+        queue_current(app);
+    }
 
     /* --- Main loop --- */
     /* KILIXAMP_EXIT_AFTER_MS: quit cleanly after N ms (headless CI/smoke
@@ -926,14 +998,12 @@ int main(int argc, char **argv)
         }
         if (now - last_render >= 33) { /* ~30fps repaint */
             last_render = now;
-            if (app->main_win.kw.visible)
-                main_window_render(&app->main_win);
-            if (app->eq_win.kw.visible)
-                eq_window_render(&app->eq_win);
-            if (app->pl_win.kw.visible)
-                playlist_window_render(&app->pl_win);
-            if (app->ed_win.kw.visible)
-                editor_window_render(&app->ed_win);
+            render_visible_windows(app);
+        }
+        if (app->pending_play) {
+            render_visible_windows(app);
+            last_render = SDL_GetTicks();
+            play_pending(app);
         }
         SDL_Delay(5);
     }

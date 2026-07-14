@@ -4,7 +4,7 @@
 #          make test       (build + run unit tests)
 
 CC      ?= gcc
-PKGS     = sdl2 SDL2_image sndfile zlib
+PKGS     = sdl2 SDL2_image sndfile zlib fluidsynth
 CFLAGS  ?= -O2
 CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -MMD -MP -D_GNU_SOURCE
 CFLAGS  += $(shell pkg-config --cflags $(PKGS))
