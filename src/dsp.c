@@ -1,15 +1,29 @@
 #include "dsp.h"
 
+#include <limits.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+bool abuf_dimensions_valid(int64_t frames, int channels)
+{
+    return frames >= 0 && frames <= INT_MAX && channels > 0 &&
+           (frames == 0 || frames <= INT_MAX / channels);
+}
+
 AudioBuf abuf_alloc(int frames, int channels)
 {
+    if (!abuf_dimensions_valid(frames, channels)) {
+        fprintf(stderr, "kilix-amp: invalid audio buffer dimensions: %d x %d\n",
+                frames, channels);
+        abort();
+    }
     AudioBuf b = {0};
     b.frames = frames;
     b.channels = channels;
-    b.data = calloc((size_t)KA_MAX(frames * channels, 1), sizeof(float));
+    size_t samples = (size_t)frames * (size_t)channels;
+    b.data = calloc(KA_MAX(samples, (size_t)1), sizeof(float));
     if (!b.data)
         abort();
     return b;
@@ -91,10 +105,21 @@ void fft_real_mag(const float *in, int n, double *mag)
 void biquad_design_peaking(Biquad *bq, double fs, double f0, double gain_db,
                            double q)
 {
+    /* An invalid band must be a true no-op.  Initializing the entire state is
+     * important when a caller reuses a Biquad that previously held history. */
+    *bq = (Biquad){.b0 = 1.0};
+    if (!isfinite(fs) || !isfinite(f0) || !isfinite(gain_db) ||
+        !isfinite(q) || fs <= 0.0 || q <= 0.0 || gain_db == 0.0 ||
+        f0 <= 0.0 || f0 >= fs / 2.0)
+        return;
+
     double a = pow(10.0, gain_db / 40.0);
     double w0 = 2.0 * M_PI * f0 / fs;
     double alpha = sin(w0) / (2.0 * q);
     double cosw = cos(w0);
+
+    if (!isfinite(a) || a <= 0.0 || !isfinite(alpha) || !isfinite(cosw))
+        return;
 
     double b0 = 1.0 + alpha * a;
     double b1 = -2.0 * cosw;
@@ -103,11 +128,19 @@ void biquad_design_peaking(Biquad *bq, double fs, double f0, double gain_db,
     double a1 = -2.0 * cosw;
     double a2 = 1.0 - alpha / a;
 
+    if (!isfinite(b0) || !isfinite(b1) || !isfinite(b2) ||
+        !isfinite(a0) || !isfinite(a1) || !isfinite(a2) || a0 == 0.0)
+        return;
+
     bq->b0 = b0 / a0;
     bq->b1 = b1 / a0;
     bq->b2 = b2 / a0;
     bq->a1 = a1 / a0;
     bq->a2 = a2 / a0;
+
+    if (!isfinite(bq->b0) || !isfinite(bq->b1) || !isfinite(bq->b2) ||
+        !isfinite(bq->a1) || !isfinite(bq->a2))
+        *bq = (Biquad){.b0 = 1.0};
 }
 
 void biquad_reset(Biquad *bq)

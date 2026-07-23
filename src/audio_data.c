@@ -88,6 +88,11 @@ bool ad_load(AudioData *ad, const char *filepath)
     SNDFILE *sf = sf_open(filepath, SFM_READ, &info);
     if (!sf)
         return false;
+    if (info.samplerate <= 0 ||
+        !abuf_dimensions_valid((int64_t)info.frames, info.channels)) {
+        sf_close(sf);
+        return false;
+    }
     AudioBuf buf = abuf_alloc((int)info.frames, info.channels);
     sf_count_t got = sf_readf_float(sf, buf.data, info.frames);
     sf_close(sf);
@@ -271,24 +276,40 @@ static AudioBuf slice_copy(const AudioBuf *b, int start, int end)
     return out;
 }
 
-/* Concatenate three frame ranges into a new buffer. */
-static AudioBuf splice3(const AudioBuf *pre, const AudioBuf *mid,
-                        const AudioBuf *post, int channels)
+static bool audio_buf_valid(const AudioBuf *b)
 {
-    AudioBuf out =
-        abuf_alloc(pre->frames + mid->frames + post->frames, channels);
+    return b && b->data && abuf_dimensions_valid(b->frames, b->channels);
+}
+
+/* Concatenate three frame ranges into a new buffer.  The sum is checked
+ * before narrowing back to AudioBuf's int frame count. */
+static bool splice3(const AudioBuf *pre, const AudioBuf *mid,
+                    const AudioBuf *post, int channels, AudioBuf *result)
+{
+    *result = (AudioBuf){0};
+    if (!audio_buf_valid(pre) || !audio_buf_valid(mid) ||
+        !audio_buf_valid(post) || pre->channels != channels ||
+        mid->channels != channels || post->channels != channels)
+        return false;
+
+    int64_t frames = (int64_t)pre->frames + mid->frames + post->frames;
+    if (!abuf_dimensions_valid(frames, channels))
+        return false;
+
+    AudioBuf out = abuf_alloc((int)frames, channels);
     float *p = out.data;
     memcpy(p, pre->data, sizeof(float) * (size_t)pre->frames * channels);
     p += (size_t)pre->frames * channels;
     memcpy(p, mid->data, sizeof(float) * (size_t)mid->frames * channels);
     p += (size_t)mid->frames * channels;
     memcpy(p, post->data, sizeof(float) * (size_t)post->frames * channels);
-    return out;
+    *result = out;
+    return true;
 }
 
 void ad_apply_effect(AudioData *ad, EffectFn fn, void *params)
 {
-    if (!ad->loaded)
+    if (!ad->loaded || !fn)
         return;
 
     int start, end;
@@ -303,13 +324,15 @@ void ad_apply_effect(AudioData *ad, EffectFn fn, void *params)
     AudioBuf region = slice_copy(&ad->samples, start, end);
     AudioBuf processed = fn(&region, ad->sr, params);
     abuf_free(&region);
-    if (!processed.data && processed.frames != 0)
+    if (!audio_buf_valid(&processed) ||
+        processed.channels != ad->samples.channels) {
+        abuf_free(&processed);
         return;
-
-    push_undo(ad);
+    }
 
     if (processed.frames == end - start) {
         /* Same length - replace in-place */
+        push_undo(ad);
         memcpy(ad->samples.data + (size_t)start * ad->samples.channels,
                processed.data,
                sizeof(float) * (size_t)processed.frames *
@@ -320,12 +343,18 @@ void ad_apply_effect(AudioData *ad, EffectFn fn, void *params)
         AudioBuf pre = slice_copy(&ad->samples, 0, start);
         AudioBuf post =
             slice_copy(&ad->samples, end, ad->samples.frames);
-        AudioBuf spliced =
-            splice3(&pre, &processed, &post, ad->samples.channels);
-        ad->sel_end = start + processed.frames;
+        AudioBuf spliced;
+        bool ok = splice3(&pre, &processed, &post, ad->samples.channels,
+                          &spliced);
+        int processed_end = ok ? start + processed.frames : start;
         abuf_free(&pre);
         abuf_free(&post);
         abuf_free(&processed);
+        if (!ok)
+            return;
+
+        push_undo(ad);
+        ad->sel_end = processed_end;
         abuf_free(&ad->samples);
         ad->samples = spliced;
     }
@@ -335,10 +364,16 @@ void ad_apply_effect(AudioData *ad, EffectFn fn, void *params)
 }
 
 /* Coerce generated audio to match the buffer's channel count. */
-static AudioBuf match_layout(const AudioBuf *gen, int channels)
+static bool match_layout(const AudioBuf *gen, int channels, AudioBuf *result)
 {
-    if (gen->channels == channels)
-        return abuf_copy(gen);
+    *result = (AudioBuf){0};
+    if (!audio_buf_valid(gen) ||
+        !abuf_dimensions_valid(gen->frames, channels))
+        return false;
+    if (gen->channels == channels) {
+        *result = abuf_copy(gen);
+        return true;
+    }
     AudioBuf out = abuf_alloc(gen->frames, channels);
     for (int f = 0; f < gen->frames; f++)
         for (int ch = 0; ch < channels; ch++) {
@@ -357,12 +392,27 @@ static AudioBuf match_layout(const AudioBuf *gen, int channels)
                     gen->data[f * gen->channels + ch % gen->channels];
             }
         }
-    return out;
+    *result = out;
+    return true;
 }
 
 void ad_apply_generator(AudioData *ad, GeneratorFn fn, void *params)
 {
+    if (!fn)
+        return;
     AudioBuf generated = fn(ad->sr, params);
+    if (!audio_buf_valid(&generated)) {
+        abuf_free(&generated);
+        return;
+    }
+
+    /* A zero-length generation request is a successful no-op.  In
+     * particular, invalid generator parameters return a valid empty buffer
+     * and must not replace already-loaded audio. */
+    if (generated.frames == 0) {
+        abuf_free(&generated);
+        return;
+    }
 
     if (!ad->loaded) {
         abuf_free(&ad->samples);
@@ -375,37 +425,45 @@ void ad_apply_generator(AudioData *ad, GeneratorFn fn, void *params)
         return;
     }
 
-    AudioBuf coerced = match_layout(&generated, ad->samples.channels);
+    bool replacing = ad_has_selection(ad);
+    int start = replacing ? ad->sel_start : ad->cursor;
+    int end = replacing ? ad->sel_end : ad->cursor;
+    int64_t result_frames = (int64_t)start + generated.frames +
+                            (ad->samples.frames - end);
+    if (!abuf_dimensions_valid(result_frames, ad->samples.channels)) {
+        abuf_free(&generated);
+        return;
+    }
+
+    AudioBuf coerced;
+    bool layout_ok = match_layout(&generated, ad->samples.channels,
+                                  &coerced);
     abuf_free(&generated);
+    if (!layout_ok)
+        return;
+
+    AudioBuf pre = slice_copy(&ad->samples, 0, start);
+    AudioBuf post = slice_copy(&ad->samples, end, ad->samples.frames);
+    AudioBuf spliced;
+    bool splice_ok = splice3(&pre, &coerced, &post, ad->samples.channels,
+                             &spliced);
+    abuf_free(&pre);
+    abuf_free(&post);
+    if (!splice_ok) {
+        abuf_free(&coerced);
+        return;
+    }
+
+    int generated_end = start + coerced.frames;
+    abuf_free(&coerced);
 
     push_undo(ad);
-
-    if (ad_has_selection(ad)) {
-        /* Replace selection */
-        int start = ad->sel_start, end = ad->sel_end;
-        AudioBuf pre = slice_copy(&ad->samples, 0, start);
-        AudioBuf post = slice_copy(&ad->samples, end, ad->samples.frames);
-        AudioBuf spliced =
-            splice3(&pre, &coerced, &post, ad->samples.channels);
-        ad->sel_end = start + coerced.frames;
-        abuf_free(&pre);
-        abuf_free(&post);
-        abuf_free(&ad->samples);
-        ad->samples = spliced;
-    } else {
-        /* Insert at cursor */
-        int pos = ad->cursor;
-        AudioBuf pre = slice_copy(&ad->samples, 0, pos);
-        AudioBuf post = slice_copy(&ad->samples, pos, ad->samples.frames);
-        AudioBuf spliced =
-            splice3(&pre, &coerced, &post, ad->samples.channels);
-        ad->cursor = pos + coerced.frames;
-        abuf_free(&pre);
-        abuf_free(&post);
-        abuf_free(&ad->samples);
-        ad->samples = spliced;
-    }
-    abuf_free(&coerced);
+    if (replacing)
+        ad->sel_end = generated_end;
+    else
+        ad->cursor = generated_end;
+    abuf_free(&ad->samples);
+    ad->samples = spliced;
 
     reclamp(ad);
     emit_data(ad);

@@ -294,6 +294,83 @@ static void test_pls_with_malformed_line_loads_valid(void)
     free(p);
 }
 
+static void test_shuffle_empty_then_load_m3u(void)
+{
+    char *p1 = make_audio_file("shuffle_m3u_1.mp3");
+    char *p2 = make_audio_file("shuffle_m3u_2.mp3");
+    char *m3u = ka_path_join(g_dir, "shuffle.m3u");
+    FILE *f = fopen(m3u, "w");
+    fprintf(f, "#EXTM3U\n%s\n%s\n", p1, p2);
+    fclose(f);
+
+    Playlist *pl = playlist_new();
+    playlist_set_shuffle(pl, true);
+    ASSERT_EQ_INT(playlist_count(pl), 0);
+    playlist_load_m3u(pl, m3u);
+    ASSERT_EQ_INT(playlist_count(pl), 2);
+    ASSERT_TRUE(playlist_next_track(pl) != NULL);
+    ASSERT_TRUE(playlist_current_index(pl) >= 0 &&
+                playlist_current_index(pl) < playlist_count(pl));
+    ASSERT_TRUE(playlist_next_track(pl) != NULL);
+    ASSERT_TRUE(playlist_current_index(pl) >= 0 &&
+                playlist_current_index(pl) < playlist_count(pl));
+
+    playlist_free(pl);
+    free(m3u);
+    free(p2);
+    free(p1);
+}
+
+static void test_shuffle_empty_then_load_pls(void)
+{
+    char *p1 = make_audio_file("shuffle_pls_1.mp3");
+    char *p2 = make_audio_file("shuffle_pls_2.mp3");
+    char *pls = ka_path_join(g_dir, "shuffle.pls");
+    FILE *f = fopen(pls, "w");
+    fprintf(f, "[playlist]\nFile1=%s\nFile2=%s\nNumberOfEntries=2\n",
+            p1, p2);
+    fclose(f);
+
+    Playlist *pl = playlist_new();
+    playlist_set_shuffle(pl, true);
+    ASSERT_EQ_INT(playlist_count(pl), 0);
+    playlist_load_pls(pl, pls);
+    ASSERT_EQ_INT(playlist_count(pl), 2);
+    ASSERT_TRUE(playlist_next_track(pl) != NULL);
+    ASSERT_TRUE(playlist_current_index(pl) >= 0 &&
+                playlist_current_index(pl) < playlist_count(pl));
+    ASSERT_TRUE(playlist_next_track(pl) != NULL);
+    ASSERT_TRUE(playlist_current_index(pl) >= 0 &&
+                playlist_current_index(pl) < playlist_count(pl));
+
+    playlist_free(pl);
+    free(pls);
+    free(p2);
+    free(p1);
+}
+
+static void test_recursive_directory_skips_symlink_cycle(void)
+{
+    char *tree = ka_path_join(g_dir, "cycle_tree");
+    ASSERT_TRUE(ka_mkdirs(tree));
+    char *song = ka_path_join(tree, "inside.mp3");
+    FILE *f = fopen(song, "w");
+    fputs("x", f);
+    fclose(f);
+    char *loop = ka_path_join(tree, "self");
+    ASSERT_EQ_INT(symlink(".", loop), 0);
+
+    Playlist *pl = playlist_new();
+    playlist_add_directory(pl, tree, true);
+    ASSERT_EQ_INT(playlist_count(pl), 1);
+    ASSERT_STR_EQ(playlist_track(pl, 0)->filepath, song);
+
+    playlist_free(pl);
+    free(loop);
+    free(song);
+    free(tree);
+}
+
 static void test_is_audio_ext(void)
 {
     ASSERT_TRUE(playlist_is_audio_ext("/x/y.mp3"));
@@ -321,6 +398,9 @@ int main(void)
     RUN(test_m3u_extinf_fractional_duration);
     RUN(test_pls_save_load);
     RUN(test_pls_with_malformed_line_loads_valid);
+    RUN(test_shuffle_empty_then_load_m3u);
+    RUN(test_shuffle_empty_then_load_pls);
+    RUN(test_recursive_directory_skips_symlink_cycle);
     RUN(test_is_audio_ext);
     return kt_summary("test_playlist");
 }

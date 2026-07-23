@@ -1,8 +1,43 @@
 #include "effects.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Convert user-supplied durations before narrowing to AudioBuf's int frame
+ * count.  Invalid requests are represented by a valid empty mono buffer by
+ * generators; effects use the false result as a no-op. */
+static bool duration_frames(int sr, double duration_sec, int channels,
+                            int *frames)
+{
+    if (sr <= 0 || !isfinite(duration_sec) || duration_sec < 0.0)
+        return false;
+    double count = (double)sr * duration_sec;
+    if (!isfinite(count) || count > INT_MAX)
+        return false;
+    int n = (int)count;
+    if (!abuf_dimensions_valid(n, channels))
+        return false;
+    *frames = n;
+    return true;
+}
+
+static AudioBuf empty_mono(void)
+{
+    return abuf_alloc(0, 1);
+}
+
+static bool generator_level_valid(double amplitude)
+{
+    return isfinite(amplitude) && amplitude >= 0.0 && amplitude <= 1.0;
+}
+
+static bool generator_frequency_valid(int sr, double frequency)
+{
+    return isfinite(frequency) && frequency >= 0.0 &&
+           frequency <= (double)sr / 2.0;
+}
 
 /* Per-frame peak across channels. */
 static double frame_peak(const AudioBuf *b, int f)
@@ -36,13 +71,16 @@ static AudioBuf scaled_clipped(const AudioBuf *in, double factor)
 AudioBuf fx_amplify(const AudioBuf *in, int sr, double gain_db)
 {
     (void)sr;
-    return scaled_clipped(in, pow(10.0, gain_db / 20.0));
+    if (!isfinite(gain_db))
+        return abuf_copy(in);
+    double factor = pow(10.0, gain_db / 20.0);
+    return isfinite(factor) ? scaled_clipped(in, factor) : abuf_copy(in);
 }
 
 AudioBuf fx_normalize(const AudioBuf *in, int sr, double peak_level_db)
 {
     (void)sr;
-    if (in->frames == 0)
+    if (in->frames == 0 || !isfinite(peak_level_db))
         return abuf_copy(in);
     double peak = 0.0;
     int n = abuf_samples(in);
@@ -51,13 +89,16 @@ AudioBuf fx_normalize(const AudioBuf *in, int sr, double peak_level_db)
     if (peak < 1e-10)
         return abuf_copy(in);
     double target = pow(10.0, peak_level_db / 20.0);
-    return scaled_clipped(in, target / peak);
+    return isfinite(target) ? scaled_clipped(in, target / peak)
+                            : abuf_copy(in);
 }
 
 AudioBuf fx_loudness_normalize(const AudioBuf *in, int sr,
                                double target_lufs)
 {
     (void)sr;
+    if (!isfinite(target_lufs))
+        return abuf_copy(in);
     int n = abuf_samples(in);
     double sum = 0.0;
     for (int i = 0; i < n; i++)
@@ -69,13 +110,19 @@ AudioBuf fx_loudness_normalize(const AudioBuf *in, int sr,
     /* Approximate: LUFS ~ RMS dB - 0.691 (simplified) */
     double current_lufs = current_db - 0.691;
     double gain_db = target_lufs - current_lufs;
-    return scaled_clipped(in, pow(10.0, gain_db / 20.0));
+    double factor = pow(10.0, gain_db / 20.0);
+    return isfinite(factor) ? scaled_clipped(in, factor) : abuf_copy(in);
 }
 
 AudioBuf fx_fade_in(const AudioBuf *in, int sr, double duration_sec)
 {
     AudioBuf out = abuf_copy(in);
-    int n = KA_MIN((int)(duration_sec * sr), in->frames);
+    if (sr <= 0 || !isfinite(duration_sec) || duration_sec <= 0.0)
+        return out;
+    double requested = duration_sec * (double)sr;
+    if (!isfinite(requested))
+        return out;
+    int n = requested >= in->frames ? in->frames : (int)requested;
     if (n <= 0)
         return out;
     for (int f = 0; f < n; f++) {
@@ -89,7 +136,12 @@ AudioBuf fx_fade_in(const AudioBuf *in, int sr, double duration_sec)
 AudioBuf fx_fade_out(const AudioBuf *in, int sr, double duration_sec)
 {
     AudioBuf out = abuf_copy(in);
-    int n = KA_MIN((int)(duration_sec * sr), in->frames);
+    if (sr <= 0 || !isfinite(duration_sec) || duration_sec <= 0.0)
+        return out;
+    double requested = duration_sec * (double)sr;
+    if (!isfinite(requested))
+        return out;
+    int n = requested >= in->frames ? in->frames : (int)requested;
     if (n <= 0)
         return out;
     int start = in->frames - n;
@@ -125,8 +177,19 @@ AudioBuf fx_reverse(const AudioBuf *in, int sr)
 AudioBuf fx_truncate_silence(const AudioBuf *in, int sr, double threshold_db,
                              int min_silence_ms)
 {
+    if (!isfinite(threshold_db))
+        return abuf_copy(in);
     double threshold = pow(10.0, threshold_db / 20.0);
-    int min_silence = (int)(min_silence_ms / 1000.0 * sr);
+    if (!isfinite(threshold))
+        return abuf_copy(in);
+
+    /* The kept run can never exceed the input, so cap in double precision
+     * before converting.  Negative values mean keep no internal silence. */
+    int min_silence = 0;
+    if (min_silence_ms > 0 && sr > 0) {
+        double requested = (double)min_silence_ms * (double)sr / 1000.0;
+        min_silence = requested >= in->frames ? in->frames : (int)requested;
+    }
 
     /* Find first and last loud frame */
     int start = -1, end = -1;
@@ -170,12 +233,17 @@ AudioBuf fx_truncate_silence(const AudioBuf *in, int sr, double threshold_db,
 AudioBuf fx_compressor(const AudioBuf *in, int sr, double threshold_db,
                        double ratio, double attack_ms, double makeup_db)
 {
-    if (in->frames == 0)
+    if (in->frames == 0 || sr <= 0 || !isfinite(threshold_db) ||
+        !isfinite(ratio) || !isfinite(attack_ms) || !isfinite(makeup_db) ||
+        ratio <= 0.0 || attack_ms <= 0.0)
         return abuf_copy(in);
     double threshold = pow(10.0, threshold_db / 20.0);
     double attack_coeff = exp(-1.0 / (attack_ms / 1000.0 * sr));
     double release_coeff = exp(-1.0 / (0.1 * sr)); /* 100ms release */
     double makeup = pow(10.0, makeup_db / 20.0);
+    if (!isfinite(threshold) || !isfinite(attack_coeff) ||
+        !isfinite(release_coeff) || !isfinite(makeup))
+        return abuf_copy(in);
 
     AudioBuf out = abuf_alloc(in->frames, in->channels);
     double env = fabs(frame_mean(in, 0));
@@ -199,11 +267,14 @@ AudioBuf fx_compressor(const AudioBuf *in, int sr, double threshold_db,
 AudioBuf fx_limiter(const AudioBuf *in, int sr, double threshold_db,
                     double release_ms)
 {
-    if (in->frames == 0)
+    if (in->frames == 0 || sr <= 0 || !isfinite(threshold_db) ||
+        !isfinite(release_ms))
         return abuf_copy(in);
     double threshold = KA_MAX(pow(10.0, threshold_db / 20.0), 1e-10);
     double release_coeff =
         exp(-1.0 / KA_MAX(1.0, release_ms / 1000.0 * sr));
+    if (!isfinite(threshold) || !isfinite(release_coeff))
+        return abuf_copy(in);
 
     AudioBuf out = abuf_alloc(in->frames, in->channels);
     double g = 1.0;
@@ -224,10 +295,16 @@ AudioBuf fx_limiter(const AudioBuf *in, int sr, double threshold_db,
 AudioBuf fx_change_pitch(const AudioBuf *in, int sr, double semitones)
 {
     (void)sr;
-    if (fabs(semitones) < 0.01)
+    if (in->frames == 0 || !isfinite(semitones) || fabs(semitones) < 0.01)
         return abuf_copy(in);
     double factor = pow(2.0, -semitones / 12.0);
-    int new_len = KA_MAX(1, (int)(in->frames * factor));
+    double scaled = (double)in->frames * factor;
+    if (!isfinite(factor) || factor <= 0.0 || !isfinite(scaled) ||
+        scaled > INT_MAX)
+        return abuf_copy(in);
+    int new_len = KA_MAX(1, (int)scaled);
+    if (!abuf_dimensions_valid(new_len, in->channels))
+        return abuf_copy(in);
     AudioBuf out = abuf_alloc(new_len, in->channels);
     /* Linear-interpolation resample (scipy.signal.resample equivalent role) */
     for (int f = 0; f < new_len; f++) {
@@ -298,8 +375,8 @@ static void remove_clicks_1d(float *sig, int n, double threshold, int width)
     for (int idx = 0; idx < n - 1; idx++) {
         if (diff[idx] <= threshold * median)
             continue;
-        int start = KA_MAX(0, idx - width);
-        int end = KA_MIN(n, idx + width + 1);
+        int start = width > idx ? 0 : idx - width;
+        int end = width >= n - idx - 1 ? n : idx + width + 1;
         if (start > 0 && end < n) {
             double y0 = sig[start - 1];
             double y1 = sig[end];
@@ -316,8 +393,15 @@ static void remove_clicks_1d(float *sig, int n, double threshold, int width)
 AudioBuf fx_click_removal(const AudioBuf *in, int sr, double threshold,
                           double width_ms)
 {
-    int width = KA_MAX(1, (int)(width_ms / 1000.0 * sr));
     AudioBuf out = abuf_copy(in);
+    if (sr <= 0 || !isfinite(threshold) || !isfinite(width_ms) ||
+        width_ms < 0.0)
+        return out;
+    double requested = width_ms / 1000.0 * (double)sr;
+    if (!isfinite(requested))
+        return out;
+    int width = requested >= in->frames ? KA_MAX(in->frames, 1)
+                                        : KA_MAX(1, (int)requested);
     float *chan = malloc(sizeof(float) * (size_t)KA_MAX(in->frames, 1));
     if (!chan)
         abort();
@@ -410,7 +494,11 @@ static void noise_reduce_1d(float *sig, int n, int sr, double reduction)
 
 AudioBuf fx_noise_reduction(const AudioBuf *in, int sr, double reduction_db)
 {
+    if (sr <= 0 || !isfinite(reduction_db))
+        return abuf_copy(in);
     double reduction = pow(10.0, reduction_db / 20.0);
+    if (!isfinite(reduction))
+        return abuf_copy(in);
     AudioBuf out = abuf_copy(in);
     float *chan = malloc(sizeof(float) * (size_t)KA_MAX(in->frames, 1));
     if (!chan)
@@ -543,7 +631,13 @@ static void allpass_filter(double *sig, int n, int delay, double feedback)
 AudioBuf fx_reverb(const AudioBuf *in, int sr, double room_size,
                    double damping, double wet, double dry)
 {
-    (void)sr;
+    if (sr <= 0 || !isfinite(room_size) || !isfinite(damping) ||
+        !isfinite(wet) || !isfinite(dry))
+        return abuf_copy(in);
+    room_size = KA_CLAMP(room_size, 0.0, 1.0);
+    damping = KA_CLAMP(damping, 0.0, 1.0);
+    wet = KA_CLAMP(wet, 0.0, 1.0);
+    dry = KA_CLAMP(dry, 0.0, 1.0);
     static const int base_delays[4] = {1557, 1617, 1491, 1422};
     int comb_delays[4];
     for (int i = 0; i < 4; i++)
@@ -587,7 +681,11 @@ AudioBuf fx_reverb(const AudioBuf *in, int sr, double room_size,
 AudioBuf gen_tone(int sr, double duration_sec, double frequency,
                   double amplitude, WaveForm waveform)
 {
-    int n = (int)(sr * duration_sec);
+    int n;
+    if (!duration_frames(sr, duration_sec, 1, &n) ||
+        !generator_frequency_valid(sr, frequency) ||
+        !generator_level_valid(amplitude))
+        return empty_mono();
     AudioBuf out = abuf_alloc(n, 1);
     for (int i = 0; i < n; i++) {
         double t = (double)i / sr;
@@ -615,7 +713,12 @@ AudioBuf gen_tone(int sr, double duration_sec, double frequency,
 AudioBuf gen_chirp(int sr, double duration_sec, double f0, double f1,
                    double amplitude)
 {
-    int n = (int)(sr * duration_sec);
+    int n;
+    if (!duration_frames(sr, duration_sec, 1, &n) ||
+        !generator_frequency_valid(sr, f0) ||
+        !generator_frequency_valid(sr, f1) ||
+        !generator_level_valid(amplitude))
+        return empty_mono();
     AudioBuf out = abuf_alloc(n, 1);
     /* Linear frequency sweep: phase = 2*pi*(f0*t + (f1-f0)/(2T)*t^2) */
     double T = KA_MAX(duration_sec, 1e-9);
@@ -629,8 +732,11 @@ AudioBuf gen_chirp(int sr, double duration_sec, double f0, double f1,
 
 AudioBuf gen_silence(int sr, double duration_sec, int channels)
 {
-    int n = (int)(sr * duration_sec);
-    return abuf_alloc(n, KA_MAX(1, channels));
+    channels = KA_MAX(1, channels);
+    int n;
+    if (!duration_frames(sr, duration_sec, channels, &n))
+        return empty_mono();
+    return abuf_alloc(n, channels);
 }
 
 /* Box-Muller gaussian */
@@ -644,7 +750,10 @@ static double randn(void)
 AudioBuf gen_noise(int sr, double duration_sec, double amplitude,
                    NoiseType type)
 {
-    int n = (int)(sr * duration_sec);
+    int n;
+    if (!duration_frames(sr, duration_sec, 1, &n) ||
+        !generator_level_valid(amplitude))
+        return empty_mono();
     AudioBuf out = abuf_alloc(n, 1);
     double *samples = malloc(sizeof(double) * (size_t)KA_MAX(n, 1));
     if (!samples)
@@ -704,21 +813,33 @@ AudioBuf gen_dtmf(int sr, const char *sequence, double tone_duration,
         {'*', 941, 1209}, {'0', 941, 1336}, {'#', 941, 1477},
         {'D', 941, 1633},
     };
-    int tone_n = (int)(sr * tone_duration);
-    int gap_n = (int)(sr * gap_duration);
+    int tone_n, gap_n;
+    if (!sequence || !duration_frames(sr, tone_duration, 1, &tone_n) ||
+        !duration_frames(sr, gap_duration, 1, &gap_n) ||
+        !generator_level_valid(amplitude))
+        return empty_mono();
 
     /* Count valid characters to size the output. */
-    int valid = 0;
+    int64_t valid = 0;
     for (const char *p = sequence; *p; p++)
         for (size_t k = 0; k < KA_LEN(freqs); k++)
             if (freqs[k].ch == *p) {
+                if (valid == INT64_MAX)
+                    return empty_mono();
                 valid++;
                 break;
             }
     if (valid == 0)
-        return abuf_alloc(0, 1);
+        return empty_mono();
 
-    AudioBuf out = abuf_alloc(valid * (tone_n + gap_n), 1);
+    int64_t per_tone = (int64_t)tone_n + gap_n;
+    if (per_tone > 0 && valid > INT64_MAX / per_tone)
+        return empty_mono();
+    int64_t total = valid * per_tone;
+    if (!abuf_dimensions_valid(total, 1))
+        return empty_mono();
+
+    AudioBuf out = abuf_alloc((int)total, 1);
     int pos = 0;
     for (const char *p = sequence; *p; p++) {
         int f1 = 0, f2 = 0;

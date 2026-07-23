@@ -2,6 +2,8 @@
  * analyzer bar/peak physics. Covers ground from test_audio_engine.py. */
 #include "ktest.h"
 
+#include <limits.h>
+
 #include "dsp.h"
 #include "spectrum.h"
 
@@ -68,6 +70,30 @@ static void test_biquad_boost_amplifies_center(void)
     ASSERT_NEAR(peak, pow(10.0, 12.0 / 20.0), 0.15);
 }
 
+static void test_biquad_above_nyquist_is_identity(void)
+{
+    Biquad bq = {0};
+    biquad_design_peaking(&bq, 22050, 15011, 12.0, 1.0);
+    for (int i = 0; i < 4096; i++) {
+        float x = i == 0 ? 1.0f : 0.0f;
+        float y = biquad_process(&bq, x);
+        ASSERT_TRUE(isfinite(y));
+        ASSERT_NEAR(y, x, 1e-7);
+    }
+}
+
+static void test_audio_buffer_dimension_boundaries(void)
+{
+    ASSERT_TRUE(abuf_dimensions_valid(0, 1));
+    ASSERT_TRUE(abuf_dimensions_valid(1024, 2));
+    ASSERT_TRUE(abuf_dimensions_valid(INT_MAX, 1));
+    ASSERT_TRUE(abuf_dimensions_valid(INT_MAX / 2, 2));
+    ASSERT_FALSE(abuf_dimensions_valid((int64_t)INT_MAX / 2 + 1, 2));
+    ASSERT_FALSE(abuf_dimensions_valid(INT_MAX, 2));
+    ASSERT_FALSE(abuf_dimensions_valid(-1, 1));
+    ASSERT_FALSE(abuf_dimensions_valid(1, 0));
+}
+
 static void test_spectrum_bars_rise_and_fall(void)
 {
     SpectrumAnalyzer sa;
@@ -129,6 +155,8 @@ int main(void)
     RUN(test_fft_roundtrip);
     RUN(test_biquad_zero_gain_is_identity);
     RUN(test_biquad_boost_amplifies_center);
+    RUN(test_biquad_above_nyquist_is_identity);
+    RUN(test_audio_buffer_dimension_boundaries);
     RUN(test_spectrum_bars_rise_and_fall);
     RUN(test_spectrum_resamples_input);
     RUN(test_mode_cycling);

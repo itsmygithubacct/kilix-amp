@@ -2,6 +2,8 @@
  * Ports tests/test_editor_effects.py and test_effects_edge.py. */
 #include "ktest.h"
 
+#include <float.h>
+
 #include "effects.h"
 
 static AudioBuf make_ramp(int frames, int channels)
@@ -116,6 +118,18 @@ static void test_truncate_silence(void)
     abuf_free(&in);
 }
 
+static void test_truncate_silence_negative_minimum(void)
+{
+    AudioBuf in = abuf_alloc(12, 1);
+    in.data[0] = 0.5f;
+    in.data[11] = 0.5f;
+    AudioBuf out = fx_truncate_silence(&in, 1000, -40.0, -1);
+    ASSERT_EQ_INT(out.frames, 2);
+    ASSERT_TRUE(out.data != NULL);
+    abuf_free(&out);
+    abuf_free(&in);
+}
+
 static void test_compressor_empty(void)
 {
     AudioBuf in = abuf_alloc(0, 1);
@@ -161,6 +175,37 @@ static void test_change_pitch(void)
     /* ~0 semitones is a no-op copy */
     out = fx_change_pitch(&in, 44100, 0.001);
     ASSERT_EQ_INT(out.frames, 1000);
+    abuf_free(&out);
+    abuf_free(&in);
+}
+
+static void test_change_pitch_empty(void)
+{
+    AudioBuf in = abuf_alloc(0, 2);
+    AudioBuf out = fx_change_pitch(&in, 44100, 12.0);
+    ASSERT_EQ_INT(out.frames, 0);
+    ASSERT_EQ_INT(out.channels, 2);
+    ASSERT_TRUE(out.data != NULL);
+    abuf_free(&out);
+    abuf_free(&in);
+}
+
+static void test_invalid_effect_durations_are_noops(void)
+{
+    AudioBuf in = make_ramp(8, 1);
+    AudioBuf out = fx_fade_in(&in, 44100, NAN);
+    for (int i = 0; i < in.frames; i++)
+        ASSERT_NEAR(out.data[i], in.data[i], 1e-7);
+    abuf_free(&out);
+
+    out = fx_fade_out(&in, 44100, INFINITY);
+    for (int i = 0; i < in.frames; i++)
+        ASSERT_NEAR(out.data[i], in.data[i], 1e-7);
+    abuf_free(&out);
+
+    out = fx_reverb(&in, 44100, INFINITY, 0.5, 0.5, 0.5);
+    for (int i = 0; i < in.frames; i++)
+        ASSERT_NEAR(out.data[i], in.data[i], 1e-7);
     abuf_free(&out);
     abuf_free(&in);
 }
@@ -272,6 +317,34 @@ static void test_generate_chirp(void)
     abuf_free(&c);
 }
 
+static void assert_valid_empty(AudioBuf *b)
+{
+    ASSERT_EQ_INT(b->frames, 0);
+    ASSERT_TRUE(b->channels > 0);
+    ASSERT_TRUE(b->data != NULL);
+    abuf_free(b);
+}
+
+static void test_invalid_generator_durations_are_empty(void)
+{
+    AudioBuf b = gen_tone(44100, -1.0, 440.0, 0.8, WAVE_SINE);
+    assert_valid_empty(&b);
+    b = gen_chirp(44100, NAN, 20.0, 20000.0, 0.8);
+    assert_valid_empty(&b);
+    b = gen_silence(44100, DBL_MAX, 2);
+    assert_valid_empty(&b);
+    b = gen_noise(44100, INFINITY, 0.5, NOISE_WHITE);
+    assert_valid_empty(&b);
+    b = gen_dtmf(8000, "12", -0.1, 0.05, 0.8);
+    assert_valid_empty(&b);
+    b = gen_dtmf(8000, "12", 0.2, DBL_MAX, 0.8);
+    assert_valid_empty(&b);
+    b = gen_tone(44100, 0.1, 440.0, DBL_MAX, WAVE_SINE);
+    assert_valid_empty(&b);
+    b = gen_chirp(44100, 0.1, 20.0, DBL_MAX, 0.8);
+    assert_valid_empty(&b);
+}
+
 static void test_noise_reduction_short_input_unchanged(void)
 {
     AudioBuf in = make_ramp(100, 1); /* < fft_size */
@@ -291,10 +364,13 @@ int main(void)
     RUN(test_fade_out_empty);
     RUN(test_invert_reverse);
     RUN(test_truncate_silence);
+    RUN(test_truncate_silence_negative_minimum);
     RUN(test_compressor_empty);
     RUN(test_compressor_reduces_loud);
     RUN(test_limiter);
     RUN(test_change_pitch);
+    RUN(test_change_pitch_empty);
+    RUN(test_invalid_effect_durations_are_noops);
     RUN(test_graphic_eq_flat_is_identity);
     RUN(test_repair_short_buffer);
     RUN(test_reverb_produces_tail_energy);
@@ -303,6 +379,7 @@ int main(void)
     RUN(test_generate_noise);
     RUN(test_generate_dtmf);
     RUN(test_generate_chirp);
+    RUN(test_invalid_generator_durations_are_empty);
     RUN(test_noise_reduction_short_input_unchanged);
     return kt_summary("test_effects");
 }

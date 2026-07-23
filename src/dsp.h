@@ -12,6 +12,9 @@ typedef struct {
     int channels;
 } AudioBuf;
 
+/* AudioBuf keeps sample counts in int, so both dimensions and their product
+ * must fit before allocating or using abuf_samples(). */
+bool abuf_dimensions_valid(int64_t frames, int channels);
 AudioBuf abuf_alloc(int frames, int channels); /* zeroed */
 AudioBuf abuf_copy(const AudioBuf *src);
 void abuf_free(AudioBuf *b);

@@ -21,14 +21,40 @@ static char *run_zenity(const char *cmd)
     FILE *p = popen(cmd, "r");
     if (!p)
         return NULL;
-    char buf[8192];
-    size_t got = fread(buf, 1, sizeof(buf) - 1, p);
+
+    size_t len = 0, cap = 8192;
+    char *buf = malloc(cap);
+    if (!buf)
+        abort();
+    bool read_ok = true;
+    for (;;) {
+        if (len + 1 == cap) {
+            if (cap > SIZE_MAX / 2)
+                abort();
+            cap *= 2;
+            char *grown = realloc(buf, cap);
+            if (!grown)
+                abort();
+            buf = grown;
+        }
+        size_t got = fread(buf + len, 1, cap - len - 1, p);
+        len += got;
+        if (got == 0) {
+            if (ferror(p))
+                read_ok = false;
+            break;
+        }
+    }
     int rc = pclose(p);
-    if (rc != 0 || got == 0)
+    if (!read_ok || rc != 0 || len == 0) {
+        free(buf);
         return NULL;
-    buf[got] = '\0';
+    }
+    buf[len] = '\0';
     char *s = ka_strip(buf);
-    return *s ? ka_strdup(s) : NULL;
+    char *result = *s ? ka_strdup(s) : NULL;
+    free(buf);
+    return result;
 }
 
 static char *shell_quote(const char *s)

@@ -318,8 +318,8 @@ static bool load_rendered_wav(AudioEngine *ae, const char *wav_path,
         *err = ka_strdup("Cannot read rendered MIDI audio");
         return false;
     }
-    if (info.frames <= 0 || info.frames > INT_MAX || info.channels <= 0 ||
-        info.samplerate <= 0) {
+    if (info.frames <= 0 || info.channels <= 0 || info.samplerate <= 0 ||
+        !abuf_dimensions_valid((int64_t)info.frames, OUT_CHANNELS)) {
         sf_close(sf);
         *err = ka_strdup("Rendered MIDI audio is invalid");
         return false;

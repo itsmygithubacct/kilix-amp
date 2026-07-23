@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static const char *AUDIO_EXTENSIONS[] = {
     ".mp3", ".mp2", ".mp1", ".ogg", ".oga", ".opus", ".flac", ".wav",
@@ -148,7 +149,9 @@ static void generate_shuffle_order(Playlist *pl)
         pl->shuffle_order[i] = pl->shuffle_order[j];
         pl->shuffle_order[j] = tmp;
     }
-    /* Put current track at position 0 if set */
+    /* Put current track at position 0 if set.  With no current track, start
+     * before the order so the first Next selects shuffle_order[0]. */
+    pl->shuffle_pos = -1;
     if (pl->current_index >= 0 && pl->current_index < pl->count) {
         for (int i = 0; i < pl->count; i++) {
             if (pl->shuffle_order[i] == pl->current_index) {
@@ -158,8 +161,8 @@ static void generate_shuffle_order(Playlist *pl)
                 break;
             }
         }
+        pl->shuffle_pos = 0;
     }
-    pl->shuffle_pos = 0;
 }
 
 static void sync_shuffle_pos(Playlist *pl, int index)
@@ -291,6 +294,16 @@ static int list_dir_sorted(const char *dirpath, char ***out)
     return n;
 }
 
+/* Do not follow directory symlinks during recursive imports. Besides avoiding
+ * surprising traversal outside the selected tree, this prevents parent/self
+ * symlinks from creating cycles. The explicitly selected root may still be a
+ * symlink; only descendants are filtered here. */
+static bool is_real_dir(const char *path)
+{
+    struct stat st;
+    return lstat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 static void add_dir_recursive(Playlist *pl, const char *dirpath)
 {
     char **names;
@@ -305,7 +318,7 @@ static void add_dir_recursive(Playlist *pl, const char *dirpath)
     }
     for (int i = 0; i < n; i++) {
         char *full = ka_path_join(dirpath, names[i]);
-        if (ka_is_dir(full))
+        if (is_real_dir(full))
             add_dir_recursive(pl, full);
         free(full);
         free(names[i]);
@@ -589,6 +602,8 @@ void playlist_load_m3u(Playlist *pl, const char *filepath)
     }
     free(basedir);
     free(data);
+    if (pl->shuffle)
+        generate_shuffle_order(pl);
     emit_changed(pl);
 }
 
@@ -701,6 +716,8 @@ void playlist_load_pls(Playlist *pl, const char *filepath)
     free(entries);
     free(basedir);
     free(data);
+    if (pl->shuffle)
+        generate_shuffle_order(pl);
     emit_changed(pl);
 }
 

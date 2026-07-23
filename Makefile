@@ -43,7 +43,7 @@ $(OBJDIR)/test_%: $(TESTDIR)/test_%.c $(LIBOBJS)
 
 test: $(TESTBINS)
 	@fail=0; for t in $(TESTBINS); do \
-		echo "== $$t"; ./$$t || fail=1; \
+		echo "== $$t"; $$t || fail=1; \
 	done; \
 	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "FAILURES"; exit 1; fi
 

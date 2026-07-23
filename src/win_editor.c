@@ -1,5 +1,6 @@
 #include "win_editor.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -448,7 +449,24 @@ DEF_FX(repair, fx_repair(in, sr))
 DEF_FX(reverb, fx_reverb(in, sr, fp->p[0], fp->p[1], fp->p[2], fp->p[3]))
 DEF_FX(invert, fx_invert(in, sr))
 DEF_FX(reverse, fx_reverse(in, sr))
-DEF_FX(truncate_silence, fx_truncate_silence(in, sr, fp->p[0], (int)fp->p[1]))
+
+static bool param_to_int(double value, int *result)
+{
+    if (!isfinite(value) || value < INT_MIN || value > INT_MAX)
+        return false;
+    *result = (int)value;
+    return true;
+}
+
+static AudioBuf fx_thunk_truncate_silence(const AudioBuf *in, int sr,
+                                          void *v)
+{
+    FxParams *fp = v;
+    int min_silence_ms;
+    if (!param_to_int(fp->p[1], &min_silence_ms))
+        return (AudioBuf){0};
+    return fx_truncate_silence(in, sr, fp->p[0], min_silence_ms);
+}
 
 static AudioBuf gen_thunk_tone(int sr, void *v)
 {
@@ -474,7 +492,10 @@ static AudioBuf gen_thunk_chirp(int sr, void *v)
 static AudioBuf gen_thunk_silence(int sr, void *v)
 {
     FxParams *fp = v;
-    return gen_silence(sr, fp->p[0], (int)fp->p[1]);
+    int channels;
+    if (!param_to_int(fp->p[1], &channels))
+        return abuf_alloc(0, 1);
+    return gen_silence(sr, fp->p[0], channels);
 }
 
 static AudioBuf gen_thunk_noise(int sr, void *v)

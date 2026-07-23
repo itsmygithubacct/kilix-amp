@@ -3,6 +3,7 @@
  * test_editor_model.py. */
 #include "ktest.h"
 
+#include <limits.h>
 #include <sndfile.h>
 
 #include "audio_data.h"
@@ -98,6 +99,32 @@ static AudioBuf fx_halve(const AudioBuf *in, int sr, void *params)
     return out;
 }
 
+static AudioBuf fx_invalid_dimensions(const AudioBuf *in, int sr,
+                                      void *params)
+{
+    (void)in;
+    (void)sr;
+    (void)params;
+    AudioBuf out = {malloc(sizeof(float)), -1, 1};
+    return out;
+}
+
+static AudioBuf fx_wrong_channels(const AudioBuf *in, int sr, void *params)
+{
+    (void)sr;
+    (void)params;
+    return abuf_alloc(in->frames, in->channels + 1);
+}
+
+static AudioBuf fx_oversized_splice(const AudioBuf *in, int sr, void *params)
+{
+    (void)in;
+    (void)sr;
+    (void)params;
+    AudioBuf out = {malloc(sizeof(float)), INT_MAX, 1};
+    return out;
+}
+
 static void test_apply_effect_full_and_undo(void)
 {
     AudioData ad = make_loaded();
@@ -151,6 +178,29 @@ static void test_apply_length_changing_effect(void)
     audio_data_destroy(&ad);
 }
 
+static void test_invalid_effect_outputs_are_ignored(void)
+{
+    AudioData ad = make_loaded();
+    float original = ad.samples.data[0];
+
+    ad_apply_effect(&ad, fx_invalid_dimensions, NULL);
+    ASSERT_EQ_INT(ad_num_samples(&ad), 1000);
+    ASSERT_NEAR(ad.samples.data[0], original, 1e-7);
+    ASSERT_FALSE(ad_can_undo(&ad));
+
+    ad_apply_effect(&ad, fx_wrong_channels, NULL);
+    ASSERT_EQ_INT(ad_num_samples(&ad), 1000);
+    ASSERT_NEAR(ad.samples.data[0], original, 1e-7);
+    ASSERT_FALSE(ad_can_undo(&ad));
+
+    ad_set_selection(&ad, 0, 1);
+    ad_apply_effect(&ad, fx_oversized_splice, NULL);
+    ASSERT_EQ_INT(ad_num_samples(&ad), 1000);
+    ASSERT_NEAR(ad.samples.data[0], original, 1e-7);
+    ASSERT_FALSE(ad_can_undo(&ad));
+    audio_data_destroy(&ad);
+}
+
 static AudioBuf gen_100(int sr, void *params)
 {
     (void)sr;
@@ -159,6 +209,28 @@ static AudioBuf gen_100(int sr, void *params)
     for (int i = 0; i < 100; i++)
         b.data[i] = 0.75f;
     return b;
+}
+
+static AudioBuf gen_empty(int sr, void *params)
+{
+    (void)sr;
+    (void)params;
+    return abuf_alloc(0, 1);
+}
+
+static AudioBuf gen_invalid(int sr, void *params)
+{
+    (void)sr;
+    (void)params;
+    return (AudioBuf){.frames = 1, .channels = 1};
+}
+
+static AudioBuf gen_oversized(int sr, void *params)
+{
+    (void)sr;
+    (void)params;
+    AudioBuf out = {malloc(sizeof(float)), INT_MAX, 1};
+    return out;
 }
 
 static void test_generate_into_empty(void)
@@ -193,6 +265,29 @@ static void test_generate_replace_selection(void)
     ASSERT_EQ_INT(ad_num_samples(&ad), 800); /* 1000 - 300 + 100 */
     ASSERT_EQ_INT(ad.sel_end, 200);
     ASSERT_NEAR(ad.samples.data[150], 0.75, 1e-6);
+    audio_data_destroy(&ad);
+}
+
+static void test_invalid_generators_do_not_replace_audio(void)
+{
+    AudioData ad = make_loaded();
+    float original = ad.samples.data[0];
+
+    ad_apply_generator(&ad, gen_empty, NULL);
+    ASSERT_EQ_INT(ad_num_samples(&ad), 1000);
+    ASSERT_NEAR(ad.samples.data[0], original, 1e-7);
+    ASSERT_FALSE(ad_can_undo(&ad));
+
+    ad_apply_generator(&ad, gen_invalid, NULL);
+    ASSERT_EQ_INT(ad_num_samples(&ad), 1000);
+    ASSERT_NEAR(ad.samples.data[0], original, 1e-7);
+    ASSERT_FALSE(ad_can_undo(&ad));
+
+    ad_set_cursor(&ad, 1);
+    ad_apply_generator(&ad, gen_oversized, NULL);
+    ASSERT_EQ_INT(ad_num_samples(&ad), 1000);
+    ASSERT_NEAR(ad.samples.data[0], original, 1e-7);
+    ASSERT_FALSE(ad_can_undo(&ad));
     audio_data_destroy(&ad);
 }
 
@@ -246,9 +341,11 @@ int main(void)
     RUN(test_undo_redo_empty);
     RUN(test_apply_to_selection);
     RUN(test_apply_length_changing_effect);
+    RUN(test_invalid_effect_outputs_are_ignored);
     RUN(test_generate_into_empty);
     RUN(test_generate_insert_at_cursor);
     RUN(test_generate_replace_selection);
+    RUN(test_invalid_generators_do_not_replace_audio);
     RUN(test_export_roundtrip);
     RUN(test_stereo_generator_layout_coercion);
     return kt_summary("test_audio_data");
