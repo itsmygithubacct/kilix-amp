@@ -18,6 +18,8 @@ with the same feature set and window-for-window architecture.
 - **Window docking** - Snap windows together like the original
 - **Keyboard shortcuts** - Z/X/C/V/B transport, all Winamp defaults
 - **UI scaling** - integer 1x-4x scaling for HiDPI displays
+- **Headless mode** - `--headless` serves a control socket, so a text front end
+  drives the same decoder instead of reimplementing playback
 
 ## Dependencies
 
@@ -73,6 +75,64 @@ to `${XDG_CONFIG_HOME:-~/.config}/kilix-amp/kilix-amp.ini` (the same INI
 layout as nixamp's config). This lets desktop hosts give Kilix-Amp isolated,
 persistent storage without changing `HOME`.
 
+## Headless mode
+
+`--headless` runs the player with no windows, no skin and no video subsystem —
+only the decoder, the EQ chain and the playlist, driven over a Unix socket:
+
+```bash
+./kilix-amp --headless ~/Music/            # serve the default socket path
+./kilix-amp --socket /tmp/amp.sock track.flac   # explicit path (implies --headless)
+```
+
+The point is that there is **one** playback implementation. A text front end
+(`kilix-music` in kilix-tui-utils is the first) is a client of this socket
+rather than a second decoder that drifts from this one.
+
+The socket path is `$KILIX_AMP_SOCKET`, else `$XDG_RUNTIME_DIR/kilix-amp.sock`,
+else `~/.local/gpu_terminal/kilix/session/kilix-amp.sock`. It is created
+owner-only (0600). A socket left behind by a killed run is cleared on startup;
+a second backend on a live socket is refused rather than fighting the first one
+for the audio device.
+
+Headless mode **reads** the settings file and never writes it, so it cannot
+overwrite the window layout or volume a windowed session is still using.
+
+### Control protocol
+
+One JSON object per line in, one per line out. Every reply carries `protocol`,
+so a client speaking another version is told so instead of having its fields
+guessed at — this is a versioned contract between two repositories, and
+bumping it is a breaking change.
+
+```console
+$ printf '{"cmd":"state","protocol":1}\n' | nc -U ~/.local/gpu_terminal/kilix/session/kilix-amp.sock
+{"protocol":1,"ok":true,"state":"playing","title":"Public Domain - Ode to Joy","file":"/home/…/ode-to-joy.ogg","pos":12.678,"len":17.777,"index":0,"count":1,"volume":80,"shuffle":false,"repeat":0}
+```
+
+| Command | Fields | Effect |
+|---|---|---|
+| `ping` | | liveness only |
+| `state` | | current status (the reply shown above) |
+| `playlist` | | `items` (paths), `index`, `count` |
+| `play` | `index` (optional) | play that entry, else resume or start |
+| `toggle` | | play/pause |
+| `pause` / `stop` | | pause; stop and unload |
+| `next` / `previous` | | honours shuffle and repeat |
+| `seek` | `pos` (seconds) | absolute seek |
+| `volume` | `level` (0-100) | set volume |
+| `add` | `path` (file or directory) | append to the playlist |
+| `clear` | | stop and empty the playlist |
+| `shuffle` | `on` (optional bool) | set, or toggle when omitted |
+| `repeat` | `mode` (optional 0/1/2) | set, or cycle when omitted |
+| `quit` | | shut the backend down |
+
+Every mutating command answers with the state it produced, so a front end
+redraws in one round trip. Failures reply `"ok":false` with an `error` string;
+an unknown command is an error, never a silent no-op. `state` reports
+`loading` between accepting a track and the decoder opening it — opening a file
+is deferred to the next tick so a reply never waits on the decoder.
+
 ## Keyboard Shortcuts
 
 | Key | Action |
@@ -98,6 +158,9 @@ persistent storage without changing `HOME`.
 | Module | Purpose |
 |--------|---------|
 | `src/audio.c` | playback engine: libsndfile decode or FluidSynth MIDI render -> preamp/EQ/volume/pan -> SDL queued audio |
+| `src/headless.c` | `--headless`: the engine and playlist wired to the control socket, no windows |
+| `src/control.c` | non-blocking AF_UNIX server; line framing, so a quiet client cannot stall decoding |
+| `src/json.c` | in-house JSON for the protocol: single-line writer, flat-object reader |
 | `src/dsp.c` | in-house radix-2 FFT + biquad peaking filters |
 | `src/effects.c` | 21 editor effects/generators (scipy replaced in-house) |
 | `src/audio_data.c` | editor buffer with selection + undo/redo |

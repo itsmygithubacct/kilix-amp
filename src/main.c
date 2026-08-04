@@ -2,7 +2,7 @@
  * C rewrite of nixamp; this file ports nixamp.py (arg parsing, component
  * wiring, hotkeys, config persistence, main loop).
  *
- * Usage: kilix-amp [-h] [--skin PATH] [--double-size] [FILE ...]
+ * Usage: kilix-amp [-h] [--skin PATH] [--double-size] [--headless] [FILE ...]
  */
 
 #include <SDL.h>
@@ -18,6 +18,7 @@
 #include "consts.h"
 #include "dock.h"
 #include "filedialog.h"
+#include "headless.h"
 #include "playlist.h"
 #include "skin.h"
 #include "skin_default.h"
@@ -743,15 +744,21 @@ int main(int argc, char **argv)
 {
     const char *skin_arg = "";
     float cli_scale = 0.0f; /* 0 = not given, use config */
+    bool headless = false;
+    const char *socket_arg = "";
     const char *files[1024];
     int n_files = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             printf("Usage: kilix-amp [-h] [--skin PATH] [--scale N] "
-                   "[--double-size] [FILE ...]\n"
+                   "[--double-size] [--headless [--socket PATH]] [FILE ...]\n"
                    "  --scale N      UI scale factor (%g-%g, e.g. 1.5)\n"
-                   "  --double-size  same as --scale 2\n",
+                   "  --double-size  same as --scale 2\n"
+                   "  --headless     no windows; serve the control socket\n"
+                   "  --socket PATH  control socket path (implies --headless)\n"
+                   "                 default: $KILIX_AMP_SOCKET, else\n"
+                   "                 $XDG_RUNTIME_DIR/kilix-amp.sock\n",
                    (double)SCALE_MIN, (double)SCALE_MAX);
             return 0;
         } else if (strcmp(argv[i], "--skin") == 0 && i + 1 < argc) {
@@ -762,10 +769,20 @@ int main(int argc, char **argv)
             cli_scale = KA_CLAMP(v, SCALE_MIN, SCALE_MAX);
         } else if (strcmp(argv[i], "--double-size") == 0) {
             cli_scale = 2.0f;
+        } else if (strcmp(argv[i], "--headless") == 0) {
+            headless = true;
+        } else if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
+            socket_arg = argv[++i];
+            headless = true;
         } else if (n_files < (int)KA_LEN(files)) {
             files[n_files++] = argv[i];
         }
     }
+
+    /* Before any video or skin work: headless must run where no display
+     * exists at all. */
+    if (headless)
+        return headless_run(files, n_files, socket_arg);
 
     srand((unsigned)time(NULL));
 
