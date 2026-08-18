@@ -24,6 +24,8 @@ typedef struct {
 struct ControlServer {
     int fd;
     char *path;
+    dev_t path_dev;
+    ino_t path_ino;
     ControlClient clients[CONTROL_MAX_CLIENTS];
 };
 
@@ -69,6 +71,10 @@ static bool socket_is_live(const char *path)
 
 ControlServer *control_listen(const char *path, char *err, size_t errn)
 {
+    if (!path) {
+        snprintf(err, errn, "socket path is required");
+        return NULL;
+    }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -93,13 +99,37 @@ ControlServer *control_listen(const char *path, char *err, size_t errn)
         chmod(dir, 0700);
     free(dir);
 
-    if (access(path, F_OK) == 0) {
+    struct stat existing;
+    if (lstat(path, &existing) == 0) {
+        if (!S_ISSOCK(existing.st_mode)) {
+            snprintf(err, errn,
+                     "refusing to replace non-socket path %s", path);
+            return NULL;
+        }
+        if (existing.st_uid != geteuid()) {
+            snprintf(err, errn,
+                     "refusing to replace socket not owned by this user: %s",
+                     path);
+            return NULL;
+        }
         if (socket_is_live(path)) {
             snprintf(err, errn,
                      "another kilix-amp is already listening on %s", path);
             return NULL;
         }
-        unlink(path); /* left behind by a run that did not exit cleanly */
+        /* There is no pathname-based check-and-unlink operation that can
+         * guarantee the inspected socket is still the object being removed.
+         * A same-user process could replace it between those two operations.
+         * Fail closed and make stale-path cleanup an explicit operator act. */
+        snprintf(err, errn,
+                 "refusing to remove stale socket %s; remove it explicitly "
+                 "after verifying no kilix-amp is running",
+                 path);
+        return NULL;
+    } else if (errno != ENOENT) {
+        snprintf(err, errn, "could not inspect socket path %s: %s", path,
+                 strerror(errno));
+        return NULL;
     }
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -117,16 +147,36 @@ ControlServer *control_listen(const char *path, char *err, size_t errn)
         close(fd);
         return NULL;
     }
-    if (listen(fd, CONTROL_MAX_CLIENTS) != 0) {
-        snprintf(err, errn, "listen %s: %s", path, strerror(errno));
+
+    /* Establish the identity immediately after bind. If another same-user
+     * process has already replaced the path, close our now-unreachable socket
+     * and preserve whatever currently occupies the pathname. */
+    struct stat created;
+    if (lstat(path, &created) != 0) {
+        snprintf(err, errn, "could not verify created socket %s: %s", path,
+                 strerror(errno));
         close(fd);
-        unlink(path);
+        return NULL;
+    }
+    if (!S_ISSOCK(created.st_mode)) {
+        snprintf(err, errn,
+                 "could not verify created socket %s: path is not a socket",
+                 path);
+        close(fd);
+        return NULL;
+    }
+    if (listen(fd, CONTROL_MAX_CLIENTS) != 0) {
+        snprintf(err, errn,
+                 "listen %s: %s; socket path retained for explicit cleanup",
+                 path, strerror(errno));
+        close(fd);
         return NULL;
     }
     if (!set_nonblocking(fd)) {
-        snprintf(err, errn, "fcntl %s: %s", path, strerror(errno));
+        snprintf(err, errn,
+                 "fcntl %s: %s; socket path retained for explicit cleanup",
+                 path, strerror(errno));
         close(fd);
-        unlink(path);
         return NULL;
     }
 
@@ -135,6 +185,8 @@ ControlServer *control_listen(const char *path, char *err, size_t errn)
         abort();
     cs->fd = fd;
     cs->path = ka_strdup(path);
+    cs->path_dev = created.st_dev;
+    cs->path_ino = created.st_ino;
     for (int i = 0; i < CONTROL_MAX_CLIENTS; i++)
         cs->clients[i].fd = -1;
     return cs;
@@ -344,7 +396,12 @@ void control_close(ControlServer *cs)
     if (cs->fd >= 0)
         close(cs->fd);
     if (cs->path) {
-        unlink(cs->path);
+        /* Do not remove a file that replaced our socket while we were
+         * running. Only unlink the exact filesystem object created above. */
+        struct stat current;
+        if (lstat(cs->path, &current) == 0 && S_ISSOCK(current.st_mode) &&
+            current.st_dev == cs->path_dev && current.st_ino == cs->path_ino)
+            unlink(cs->path);
         free(cs->path);
     }
     free(cs);

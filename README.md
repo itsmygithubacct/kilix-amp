@@ -91,9 +91,11 @@ rather than a second decoder that drifts from this one.
 
 The socket path is `$KILIX_AMP_SOCKET`, else `$XDG_RUNTIME_DIR/kilix-amp.sock`,
 else `~/.local/gpu_terminal/kilix/session/kilix-amp.sock`. It is created
-owner-only (0600). A socket left behind by a killed run is cleared on startup;
-a second backend on a live socket is refused rather than fighting the first one
-for the audio device.
+owner-only (0600). A second backend on a live socket is refused rather than
+fighting the first one for the audio device. A stale socket left by a killed
+run is also preserved and refused: after verifying that no Kilix Amp process is
+running, remove that exact socket explicitly and restart. This fail-closed rule
+avoids deleting a same-user replacement in a pathname race.
 
 Headless mode **reads** the settings file and never writes it, so it cannot
 overwrite the window layout or volume a windowed session is still using.
@@ -208,3 +210,10 @@ The suite (~5000 checks) covers the playlist model, M3U/PLS parsing, config
 persistence, ZIP/skin loading including zip-bomb rejection, the default-skin
 generator, FFT/biquad DSP, spectrum physics, all 21 effects/generators, the
 editor buffer undo/redo model, and the widget primitives.
+
+## Licence and notices
+
+Kilix Amp is licensed under the MIT License; see [`LICENSE`](LICENSE).
+Vendored Termixer, the project screenshot, the generated CC0 sample and linked
+system libraries are dispositioned in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

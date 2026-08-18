@@ -43,21 +43,14 @@ SynthDef("mixerChannel", { |in=2, out=0, vol=0.8, lpf=20000, hpf=20, eqLowFreq=2
     sig = sig * volL;
     sig = Balance2.ar(sig[0], sig[1], panL);
     Out.ar(out, sig);
-}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/termixer/synthdefs");
+// Use SuperCollider's configured SynthDef directory, never an upstream
+// developer's machine path.
+}).writeDefFile;
 
 SynthDef("monitorChannel", { |in=0, out=2|
     var sig = In.ar(in, 2);
     Out.ar(out, sig);
-}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/termixer/synthdefs");
-
-"SynthDefs written!".postln;
-0.exit;
-)
-
-SynthDef("monitorChannel", { |in=0, out=2|
-    var sig = In.ar(in, 2);
-    Out.ar(out, sig);
-}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/termixer/synthdefs");
+}).writeDefFile;
 
 "SynthDefs written!".postln;
 0.exit;

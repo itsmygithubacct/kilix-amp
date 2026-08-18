@@ -36,16 +36,18 @@ typedef struct ControlServer ControlServer;
  * rule kilix-music already ships. Heap string; caller frees. */
 char *control_default_socket_path(void);
 
-/* Creates the parent directory if needed, clears a socket left behind by a
- * crashed run, and refuses to start when another backend is already listening.
- * NULL on failure with the reason in `err`. */
+/* Creates the parent directory if needed and refuses to replace any existing
+ * filesystem object. A live socket reports the existing backend; a stale
+ * socket must be removed explicitly after the operator verifies no backend is
+ * running. NULL on failure with the reason in `err`. */
 ControlServer *control_listen(const char *path, char *err, size_t errn);
 
 /* Services every ready connection once. `now_ms` drives the idle timeout. */
 void control_poll(ControlServer *cs, ControlHandler handler, void *ud,
                   uint32_t now_ms);
 
-/* Closes all connections and unlinks the socket. */
+/* Closes all connections and unlinks the socket if the path still names the
+ * exact filesystem object created by control_listen(). */
 void control_close(ControlServer *cs);
 
 const char *control_socket_path(const ControlServer *cs);
