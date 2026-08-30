@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a public-domain score to a CC0 sample track, from scratch.
+"""Render a checked-in CC0 note list to a sample track, from scratch.
 
 The samples this player ships must be redistributable without conditions, and
 that rules out the obvious shortcut. A recording carries the performer's rights
@@ -11,17 +11,16 @@ soundfont carries. Neither can honestly be called CC0.
 So the tone here is computed, not sampled: a struck-string model built from a
 harmonic series with per-partial decay, a hammer-noise transient, and a touch
 of detuning between two voices per note. Nothing in the output originates in
-anyone else's file. The only input is the note list in a public-domain score.
+anyone else's file. The exact project-authored note list is checked in beside
+the output and dedicated under CC0-1.0.
 
 Usage:
-    python3 tools/render_sample.py score.mid out.ogg ["Title for the notes"]
-
-The MIDI reader is deliberately small: it handles what a piano score uses —
-tempo changes, note on/off across several tracks — and nothing else.
+    python3 tools/render_sample.py notes.json out.ogg ["Title"]
 """
 from __future__ import annotations
 
-import struct
+import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -30,90 +29,49 @@ import wave
 import numpy as np
 
 RATE = 44100
+OGG_SERIAL = 0x4B415031  # "KAP1": Kilix Amp provenance format 1
 
 
-# ── the smallest MIDI reader that can read a piano score ────────────────────
+# ── exact, reviewable score input ───────────────────────────────────────────
 
-def _varint(data: bytes, index: int) -> tuple[int, int]:
-    value = 0
-    while True:
-        byte = data[index]
-        index += 1
-        value = (value << 7) | (byte & 0x7F)
-        if not byte & 0x80:
-            return value, index
+def read_note_list(path: str) -> tuple[list[tuple[float, float, int, int]], float]:
+    """Return (start, duration, MIDI note, velocity) and the score end."""
+    with open(path, encoding="utf-8") as source:
+        score = json.load(source)
 
+    if score.get("format") != "kilix-amp-note-list/v1":
+        raise SystemExit(f"{path}: unsupported note-list format")
+    if score.get("license") != "CC0-1.0":
+        raise SystemExit(f"{path}: note list must declare CC0-1.0")
 
-def read_midi(path: str) -> tuple[list[tuple[float, float, int, int]], float]:
-    """Return (start, duration, midi note, velocity) in seconds, and the end."""
-    data = open(path, "rb").read()
-    if data[:4] != b"MThd":
-        raise SystemExit(f"{path}: not a MIDI file")
-    _fmt, track_count, division = struct.unpack(">HHH", data[8:14])
-    if division & 0x8000:
-        raise SystemExit("SMPTE time division is not supported")
+    tempo = score.get("tempo_bpm")
+    gate = score.get("gate_ratio")
+    velocity = score.get("velocity")
+    events = score.get("events")
+    if not isinstance(tempo, (int, float)) or not math.isfinite(tempo) or tempo <= 0:
+        raise SystemExit(f"{path}: tempo_bpm must be finite and positive")
+    if not isinstance(gate, (int, float)) or not math.isfinite(gate) or not 0 < gate <= 1:
+        raise SystemExit(f"{path}: gate_ratio must be in (0, 1]")
+    if not isinstance(velocity, int) or not 1 <= velocity <= 127:
+        raise SystemExit(f"{path}: velocity must be an integer in [1, 127]")
+    if not isinstance(events, list) or not events:
+        raise SystemExit(f"{path}: events must be a non-empty list")
 
-    # Collect every event with its absolute tick, across all tracks, then walk
-    # them in tick order so one tempo map applies to all of them.
-    events: list[tuple[int, int, bytes]] = []
-    index = 14
-    for order in range(track_count):
-        if data[index:index + 4] != b"MTrk":
-            break
-        length = struct.unpack(">I", data[index + 4:index + 8])[0]
-        end = index + 8 + length
-        cursor = index + 8
-        tick = 0
-        status = 0
-        while cursor < end:
-            delta, cursor = _varint(data, cursor)
-            tick += delta
-            byte = data[cursor]
-            if byte & 0x80:
-                status = byte
-                cursor += 1
-            if status == 0xFF:                     # meta
-                kind = data[cursor]
-                cursor += 1
-                size, cursor = _varint(data, cursor)
-                events.append((tick, order, bytes([0xFF, kind]) +
-                               data[cursor:cursor + size]))
-                cursor += size
-            elif status in (0xF0, 0xF7):           # sysex, skipped
-                size, cursor = _varint(data, cursor)
-                cursor += size
-            else:
-                size = 1 if (status & 0xF0) in (0xC0, 0xD0) else 2
-                events.append((tick, order, bytes([status]) +
-                               data[cursor:cursor + size]))
-                cursor += size
-        index = end
-
-    events.sort(key=lambda item: (item[0], item[1]))
+    seconds_per_beat = 60.0 / tempo
+    cursor = 0.0
     notes: list[tuple[float, float, int, int]] = []
-    open_notes: dict[tuple[int, int], tuple[float, int]] = {}
-    seconds_per_tick = 0.5 / division              # 120bpm until told otherwise
-    now = 0.0
-    tick_at = 0
-    for tick, _order, payload in events:
-        now += (tick - tick_at) * seconds_per_tick
-        tick_at = tick
-        if payload[0] == 0xFF:
-            if payload[1] == 0x51 and len(payload) >= 5:      # set tempo
-                micros = int.from_bytes(payload[2:5], "big")
-                seconds_per_tick = micros / 1_000_000.0 / division
-            continue
-        kind, channel = payload[0] & 0xF0, payload[0] & 0x0F
-        if kind == 0x90 and payload[2]:                       # note on
-            open_notes[(channel, payload[1])] = (now, payload[2])
-        elif kind in (0x80, 0x90):                            # note off
-            started = open_notes.pop((channel, payload[1]), None)
-            if started:
-                start, velocity = started
-                notes.append((start, max(0.05, now - start), payload[1],
-                              velocity))
-    end = max((start + length for start, length, _n, _v in notes), default=0.0)
-    return notes, end
+    for index, event in enumerate(events):
+        if not isinstance(event, list) or len(event) != 2:
+            raise SystemExit(f"{path}: event {index} must be [note, beats]")
+        note, beats = event
+        if not isinstance(note, int) or not 0 <= note <= 127:
+            raise SystemExit(f"{path}: event {index} note must be in [0, 127]")
+        if not isinstance(beats, (int, float)) or not math.isfinite(beats) or beats <= 0:
+            raise SystemExit(f"{path}: event {index} beats must be finite and positive")
+        span = beats * seconds_per_beat
+        notes.append((cursor, span * gate, note, velocity))
+        cursor += span
+    return notes, cursor
 
 
 # ── a struck string, computed rather than sampled ───────────────────────────
@@ -176,12 +134,52 @@ def render(notes, end: float) -> np.ndarray:
     return stereo
 
 
+def _ogg_crc(page: bytearray) -> int:
+    """Return the non-reflected CRC-32 required by the Ogg framing spec."""
+    checksum = 0
+    for byte in page:
+        checksum ^= byte << 24
+        for _ in range(8):
+            checksum = ((checksum << 1) ^ 0x04C11DB7) & 0xFFFFFFFF \
+                if checksum & 0x80000000 else (checksum << 1) & 0xFFFFFFFF
+    return checksum
+
+
+def normalize_ogg(path: str) -> None:
+    """Replace FFmpeg's random stream serial and repair every page checksum."""
+    with open(path, "rb") as source:
+        data = bytearray(source.read())
+    cursor = 0
+    pages = 0
+    while cursor < len(data):
+        if data[cursor:cursor + 4] != b"OggS" or cursor + 27 > len(data):
+            raise SystemExit(f"{path}: invalid Ogg page at byte {cursor}")
+        segments = data[cursor + 26]
+        table_end = cursor + 27 + segments
+        if table_end > len(data):
+            raise SystemExit(f"{path}: truncated Ogg segment table")
+        page_end = table_end + sum(data[cursor + 27:table_end])
+        if page_end > len(data):
+            raise SystemExit(f"{path}: truncated Ogg page payload")
+        page = data[cursor:page_end]
+        page[14:18] = OGG_SERIAL.to_bytes(4, "little")
+        page[22:26] = b"\0\0\0\0"
+        page[22:26] = _ogg_crc(page).to_bytes(4, "little")
+        data[cursor:page_end] = page
+        cursor = page_end
+        pages += 1
+    if pages == 0:
+        raise SystemExit(f"{path}: no Ogg pages")
+    with open(path, "wb") as destination:
+        destination.write(data)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(__doc__.strip())
         return 2
     source, destination = argv[0], argv[1]
-    notes, end = read_midi(source)
+    notes, end = read_note_list(source)
     print(f"{len(notes)} notes, {end:.1f}s")
     samples = render(notes, end)
     pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2")
@@ -191,12 +189,15 @@ def main(argv: list[str]) -> int:
             handle.setsampwidth(2)
             handle.setframerate(RATE)
             handle.writeframes(pcm.tobytes())
-        command = ["ffmpeg", "-loglevel", "error", "-y", "-i", raw.name,
-                   "-c:a", "libvorbis", "-qscale:a", "3"]
+        command = ["ffmpeg", "-loglevel", "error", "-y",
+                   "-fflags", "+bitexact", "-i", raw.name,
+                   "-map_metadata", "-1", "-c:a", "libvorbis",
+                   "-qscale:a", "3", "-flags:a", "+bitexact"]
         if len(argv) > 2:
             command += ["-metadata", f"title={argv[2]}"]
         command.append(destination)
         subprocess.run(command, check=True)
+    normalize_ogg(destination)
     print(f"wrote {destination}")
     return 0
 

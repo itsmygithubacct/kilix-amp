@@ -51,12 +51,24 @@ the root MIT grant, not a separately licensed third-party asset.
 ## Generated sample recording
 
 `samples/ode-to-joy.ogg` has SHA-256
-`e4bf0814fe81227ca0c7f7dc5272fdc3dc407ae880062fda0ef54cdc4ea05e25`.
+`a8057814a2400bf19d5e2887fb89b71506504176b4c5fef1ad53a0403dc5eae1`.
 Beethoven's composition is public domain. The recording is a project-generated
-additive-synthesis rendering made from scratch without a performer, sample or
-soundfont and is dedicated to the public domain under CC0. Its
-provenance and generator are retained in [`samples/README.md`](samples/README.md)
-and [`tools/render_sample.py`](tools/render_sample.py).
+additive-synthesis rendering made from scratch without a performer, MIDI file,
+sample or soundfont. The exact 62/62-event input is
+[`samples/ode-to-joy-notes.json`](samples/ode-to-joy-notes.json), SHA-256
+`3eabca03014a8e2aa4b0dc7eaf174254dc3afb12269ed874e8b1cfc1a08667b7`.
+
+The project author dedicates both that transcription and the generated
+recording under **Creative Commons CC0 1.0 Universal (`CC0-1.0`)**: to the
+extent possible under law, the author waives all copyright and related or
+neighbouring rights. Legal code:
+<https://creativecommons.org/publicdomain/zero/1.0/legalcode>.
+
+[`samples/ode-to-joy.provenance.json`](samples/ode-to-joy.provenance.json)
+binds the input, generator, output, exact invocation and 6/6 relevant tool
+identities. [`tools/verify_sample.py`](tools/verify_sample.py) regenerates the
+243323/243323-byte Ogg file and requires byte identity with the checked-in
+sample.
 
 ## Distribution-supplied libraries
 

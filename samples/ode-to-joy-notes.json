@@ -1,0 +1,31 @@
+{
+  "format": "kilix-amp-note-list/v1",
+  "title": "Ode to Joy — project-authored melody transcription",
+  "composition": "Ludwig van Beethoven, Symphony No. 9, fourth movement (public domain)",
+  "provenance": "Transcribed directly by the Kilix Amp project author from the public-domain melody; no MIDI, recording, score file, sample, or soundfont was used.",
+  "license": "CC0-1.0",
+  "tempo_bpm": 120,
+  "gate_ratio": 0.9,
+  "velocity": 96,
+  "events": [
+    [64, 1], [64, 1], [65, 1], [67, 1],
+    [67, 1], [65, 1], [64, 1], [62, 1],
+    [60, 1], [60, 1], [62, 1], [64, 1],
+    [64, 1], [62, 1], [62, 2],
+
+    [64, 1], [64, 1], [65, 1], [67, 1],
+    [67, 1], [65, 1], [64, 1], [62, 1],
+    [60, 1], [60, 1], [62, 1], [64, 1],
+    [62, 1], [60, 1], [60, 2],
+
+    [62, 1], [62, 1], [64, 1], [60, 1],
+    [62, 1], [64, 0.5], [65, 0.5], [64, 1], [60, 1],
+    [62, 1], [64, 0.5], [65, 0.5], [64, 1], [62, 1],
+    [60, 1], [62, 1], [55, 2],
+
+    [64, 1], [64, 1], [65, 1], [67, 1],
+    [67, 1], [65, 1], [64, 1], [62, 1],
+    [60, 1], [60, 1], [62, 1], [64, 1],
+    [62, 1], [60, 1], [60, 2]
+  ]
+}

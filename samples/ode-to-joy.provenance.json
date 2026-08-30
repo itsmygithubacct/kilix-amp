@@ -1,0 +1,38 @@
+{
+  "format": "kilix-amp-sample-provenance/v1",
+  "created_utc": "2026-08-30",
+  "license": "CC0-1.0",
+  "input": {
+    "path": "samples/ode-to-joy-notes.json",
+    "sha256": "3eabca03014a8e2aa4b0dc7eaf174254dc3afb12269ed874e8b1cfc1a08667b7",
+    "events": 62
+  },
+  "generator": {
+    "path": "tools/render_sample.py",
+    "sha256": "8ba971b9876db7738b03c22a8b688c67ef55baf212786d3d4ffaa07f5d93088e"
+  },
+  "output": {
+    "path": "samples/ode-to-joy.ogg",
+    "sha256": "a8057814a2400bf19d5e2887fb89b71506504176b4c5fef1ad53a0403dc5eae1",
+    "bytes": 243323,
+    "duration_seconds": 34.5,
+    "sample_rate_hz": 44100,
+    "channels": 2,
+    "codec": "Vorbis in Ogg"
+  },
+  "invocation": [
+    "python3",
+    "tools/render_sample.py",
+    "samples/ode-to-joy-notes.json",
+    "samples/ode-to-joy.ogg",
+    "Ode to Joy — Kilix Amp CC0 sample"
+  ],
+  "tools": {
+    "python": "3.13.5",
+    "numpy": "2.2.4",
+    "ffmpeg": "7.1.5-0+deb13u1",
+    "ffmpeg_sha256": "e8a8d46f5225f3062cec7c07fb145d58ae73c603cb740dcd5bad34bfb54e455a",
+    "libvorbis0a": "1.3.7-3",
+    "libvorbisenc2": "1.3.7-3"
+  }
+}
