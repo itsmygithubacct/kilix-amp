@@ -9,10 +9,17 @@ CFLAGS  ?= -O2
 CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -MMD -MP -D_GNU_SOURCE
 CFLAGS  += $(shell pkg-config --cflags $(PKGS))
 LDLIBS   = $(shell pkg-config --libs $(PKGS)) -lm -lpthread
+ENCODEC ?= 0
+ifeq ($(ENCODEC),1)
+ENCODEC_CFLAGS ?= $(shell pkg-config --cflags kilix-encodec)
+ENCODEC_LIBS ?= $(shell pkg-config --libs kilix-encodec)
+CFLAGS += -DKA_WITH_ENCODEC $(ENCODEC_CFLAGS)
+LDLIBS += $(ENCODEC_LIBS)
+endif
 
 BIN      = kilix-amp
 SRCDIR   = src
-OBJDIR   = build
+OBJDIR   = $(if $(filter 1,$(ENCODEC)),build-encodec,build)
 TESTDIR  = tests
 
 SRCS     = $(wildcard $(SRCDIR)/*.c)
@@ -25,8 +32,8 @@ TESTBINS = $(TESTSRCS:$(TESTDIR)/%.c=$(OBJDIR)/%)
 
 all: $(BIN)
 
-$(BIN): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+$(BIN): $(OBJS) FORCE
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -41,6 +48,9 @@ debug: clean $(BIN)
 $(OBJDIR)/test_%: $(TESTDIR)/test_%.c $(LIBOBJS)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $< $(LIBOBJS) $(LDLIBS)
 
+$(OBJDIR)/native_encodec: $(TESTDIR)/native_encodec.c $(LIBOBJS)
+	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $< $(LIBOBJS) $(LDLIBS)
+
 test: $(TESTBINS)
 	@fail=0; for t in $(TESTBINS); do \
 		echo "== $$t"; $$t || fail=1; \
@@ -48,8 +58,9 @@ test: $(TESTBINS)
 	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "FAILURES"; exit 1; fi
 
 clean:
-	rm -rf $(OBJDIR) $(BIN)
+	rm -rf build build-encodec $(BIN)
 
 -include $(OBJS:.o=.d)
 
-.PHONY: all debug test clean
+FORCE:
+.PHONY: all debug test clean FORCE

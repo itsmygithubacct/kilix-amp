@@ -24,7 +24,17 @@ typedef struct {
     void (*eos)(void *ud);
     void (*error)(void *ud, const char *msg);
     void *ud;
+    /* Read-only pre-DSP PCM tap for diagnostics and sample-equivalence tests.
+     * The buffer is valid only for this callback; no device ownership transfer. */
+    void (*decoded_pcm)(void *ud, const float *pcm, size_t frames,
+        unsigned int channels, unsigned int sample_rate, uint64_t position);
 } AudioCallbacks;
+
+typedef struct {
+    bool encodec, ready, buffering, seekable, live;
+    unsigned int sample_rate, channels, bitrate, profile;
+    uint64_t samples;
+} AudioSourceInfo;
 
 typedef struct AudioEngine AudioEngine;
 
@@ -47,6 +57,7 @@ int audio_get_position_ms(AudioEngine *ae);
 int audio_get_duration_ms(AudioEngine *ae);
 const char *audio_state(const AudioEngine *ae);
 const char *audio_current_file(const AudioEngine *ae); /* NULL if none */
+AudioSourceInfo audio_source_info(const AudioEngine *ae);
 /* Drive decoding + event emission; call every main-loop tick. */
 void audio_poll(AudioEngine *ae);
 void audio_cleanup(AudioEngine *ae); /* also frees the engine */

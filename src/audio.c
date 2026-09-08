@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "dsp.h"
+#include "encodec_source.h"
 
 #define EQ_BANDS 10
 #define OUT_CHANNELS 2
@@ -37,6 +38,9 @@ struct AudioEngine {
     bool is_midi;
     AudioBuf midi_pcm;  /* Interleaved stereo float render. */
     int64_t midi_pos;   /* Next rendered frame to queue. */
+    KaEncodec *encodec;
+    bool is_encodec, encodec_ready, encodec_want_play, encodec_seeking, encodec_failed;
+    int encodec_seek_from_ms;
 
     SDL_AudioDeviceID dev;
     int dev_rate;
@@ -168,6 +172,39 @@ static bool is_midi_path(const char *path)
     bool ok = strcmp(ext, ".mid") == 0 || strcmp(ext, ".midi") == 0;
     free(ext);
     return ok;
+}
+
+static bool is_encodec_path(const char *path)
+{
+    char *extension = ka_ext_lower(path);
+    bool result = strcmp(extension, ".kenc") == 0;
+    free(extension);
+    return result;
+}
+
+static void start_encodec(AudioEngine *ae)
+{
+    const char *threads = getenv("KILIX_ENCODEC_THREADS");
+    unsigned int count = 1u;
+    if (threads && *threads) {
+        if (strcmp(threads, "2") == 0) count = 2u;
+        else if (strcmp(threads, "1") != 0) {
+            ae->encodec_failed = true;
+            emit_error(ae, "KILIX_ENCODEC_THREADS must be 1 or 2");
+            return;
+        }
+    }
+    ae->encodec = ka_encodec_open(ae->current_file,
+        getenv("KILIX_ENCODEC_24KHZ_DIR"), getenv("KILIX_ENCODEC_48KHZ_DIR"), count);
+    ae->encodec_ready = false;
+    ae->encodec_seeking = false;
+    if (ae->encodec == NULL || ka_encodec_info(ae->encodec).failed) {
+        ae->encodec_failed = true;
+        emit_error(ae, ka_encodec_error(ae->encodec));
+        ka_encodec_close(ae->encodec); ae->encodec = NULL;
+        return;
+    }
+    emit_state(ae, "loading");
 }
 
 static char *find_soundfont(void)
@@ -378,7 +415,7 @@ static void emit_tags(AudioEngine *ae)
     if (!ae->cbs.tag_found)
         return;
     AudioTags tags = {0};
-    if (ae->is_midi) {
+    if (ae->is_midi || ae->is_encodec) {
         char *stem = ka_stem(ae->current_file);
         snprintf(tags.title, sizeof(tags.title), "%s", stem);
         free(stem);
@@ -393,7 +430,10 @@ static void emit_tags(AudioEngine *ae)
     tags.sample_rate = ae->info.samplerate;
     tags.channels = ae->info.channels;
     struct stat st;
-    if (!ae->is_midi && ae->current_file &&
+    if (ae->is_encodec) {
+        KaEncodecInfo info = ka_encodec_info(ae->encodec);
+        tags.bitrate = (int)(info.codebooks * (info.profile == 1u ? 750u : 1500u));
+    } else if (!ae->is_midi && ae->current_file &&
         stat(ae->current_file, &st) == 0 &&
         ae->info.frames > 0 && ae->info.samplerate > 0) {
         double dur = (double)ae->info.frames / ae->info.samplerate;
@@ -405,7 +445,8 @@ static void emit_tags(AudioEngine *ae)
 
 void audio_load(AudioEngine *ae, const char *filepath)
 {
-    if (!ka_is_file(filepath)) {
+    bool encoded = is_encodec_path(filepath);
+    if (!encoded && !ka_is_file(filepath)) {
         char *msg = ka_asprintf("File not found: %s", filepath);
         emit_error(ae, msg);
         free(msg);
@@ -416,8 +457,14 @@ void audio_load(AudioEngine *ae, const char *filepath)
     clear_midi(ae);
     free(ae->current_file);
     ae->current_file = ka_strdup(filepath);
+    ae->is_encodec = encoded;
+    ae->encodec_failed = false;
 
     memset(&ae->info, 0, sizeof(ae->info));
+    if (encoded) {
+        start_encodec(ae);
+        return;
+    }
     if (is_midi_path(filepath)) {
         char *err = NULL;
         if (!load_midi(ae, filepath, &err)) {
@@ -455,13 +502,32 @@ static int feed_chunk(AudioEngine *ae)
     if (!in || !out)
         abort();
 
-    sf_count_t got = sf_readf_float(ae->sf, in, FEED_CHUNK_FRAMES);
+    sf_count_t got;
+    if (ae->is_encodec) {
+        uint64_t position = 0u;
+        int frames = ka_encodec_read(ae->encodec, in,
+            (size_t)FEED_CHUNK_FRAMES * (size_t)in_ch, &position);
+        if (frames == 0) { free(in); free(out); return 0; }
+        if (frames == -2 || (frames > 0 && position != (uint64_t)ae->fed_frames)) {
+            const char *error = frames == -2 ? ka_encodec_error(ae->encodec) : "Discontinuous EnCodec worker output";
+            ae->encodec_failed = true;
+            audio_stop(ae);
+            emit_error(ae, error);
+            free(in); free(out); return 0;
+        }
+        got = frames < 0 ? 0 : frames;
+    } else {
+        got = sf_readf_float(ae->sf, in, FEED_CHUNK_FRAMES);
+    }
     if (got <= 0) {
         free(in);
         free(out);
         ae->file_exhausted = true;
         return 0;
     }
+    if (ae->cbs.decoded_pcm)
+        ae->cbs.decoded_pcm(ae->cbs.ud, in, (size_t)got, (unsigned int)in_ch,
+            (unsigned int)ae->info.samplerate, (uint64_t)ae->fed_frames);
 
     double lgain = KA_MIN(1.0, 1.0 - ae->pan);
     double rgain = KA_MIN(1.0, 1.0 + ae->pan);
@@ -549,6 +615,7 @@ static int feed_midi_chunk(AudioEngine *ae)
 
 static bool has_loaded_audio(const AudioEngine *ae)
 {
+    if (ae->is_encodec) return ae->encodec != NULL && ae->encodec_ready;
     return ae->is_midi ? ae->midi_pcm.data != NULL : ae->sf != NULL;
 }
 
@@ -564,6 +631,15 @@ void audio_play(AudioEngine *ae)
 {
     if (!ae->current_file)
         return;
+    if (ae->is_encodec) {
+        if (ae->encodec_failed) return;
+        if (ae->encodec_want_play) return;
+        if (!ae->encodec) start_encodec(ae);
+        if (!ae->encodec) return;
+        ae->encodec_want_play = true;
+        emit_state(ae, ae->encodec_ready ? "buffering" : "loading");
+        return;
+    }
     if (strcmp(ae->state, "stopped") == 0) {
         if (ae->is_midi) {
             ae->midi_pos = 0;
@@ -593,6 +669,17 @@ void audio_play(AudioEngine *ae)
 
 void audio_pause(AudioEngine *ae)
 {
+    if (ae->is_encodec && ae->encodec) {
+        if (strcmp(ae->state, "paused") == 0) {
+            ae->encodec_want_play = true;
+            emit_state(ae, ae->encodec_ready ? "buffering" : "loading");
+        } else {
+            ae->encodec_want_play = false;
+            if (ae->dev) SDL_PauseAudioDevice(ae->dev, 1);
+            emit_state(ae, "paused");
+        }
+        return;
+    }
     if (strcmp(ae->state, "playing") == 0) {
         if (ae->dev)
             SDL_PauseAudioDevice(ae->dev, 1);
@@ -606,6 +693,8 @@ void audio_pause(AudioEngine *ae)
 
 void audio_stop(AudioEngine *ae)
 {
+    ka_encodec_close(ae->encodec); ae->encodec = NULL;
+    ae->encodec_ready = ae->encodec_want_play = ae->encodec_seeking = false;
     if (ae->dev) {
         SDL_PauseAudioDevice(ae->dev, 1);
         SDL_ClearQueuedAudio(ae->dev);
@@ -626,6 +715,19 @@ void audio_seek(AudioEngine *ae, int position_ms)
     sf_count_t frame = (sf_count_t)((int64_t)position_ms *
                                     ae->info.samplerate / 1000);
     frame = KA_CLAMP(frame, 0, ae->info.frames);
+    if (ae->is_encodec) {
+        if (frame >= ae->info.frames) frame = ae->info.frames - 1;
+        if (frame < 0 || !ka_encodec_seek(ae->encodec, (uint64_t)frame)) return;
+        if (!ae->encodec_seeking) ae->encodec_seek_from_ms = audio_get_position_ms(ae);
+        ae->encodec_seeking = true;
+        if (ae->dev) {
+            SDL_PauseAudioDevice(ae->dev, 1);
+            SDL_ClearQueuedAudio(ae->dev);
+        }
+        ae->file_exhausted = false;
+        if (ae->encodec_want_play) emit_state(ae, "buffering");
+        return;
+    }
     if (ae->is_midi)
         ae->midi_pos = frame;
     else
@@ -673,6 +775,7 @@ int audio_get_position_ms(AudioEngine *ae)
 {
     if (!has_loaded_audio(ae) || ae->info.samplerate <= 0)
         return 0;
+    if (ae->is_encodec && ae->encodec_seeking) return ae->encodec_seek_from_ms;
     int64_t playing = ae->fed_frames - queued_frames(ae);
     if (playing < 0)
         playing = 0;
@@ -734,15 +837,66 @@ static void emit_spectrum(AudioEngine *ae)
 void audio_poll(AudioEngine *ae)
 {
     uint32_t now = SDL_GetTicks();
+    ka_encodec_reap();
+    if (ae->is_encodec && ae->encodec) {
+        ka_encodec_poll(ae->encodec);
+        KaEncodecInfo info = ka_encodec_info(ae->encodec);
+        if (info.failed) {
+            const char *error = ka_encodec_error(ae->encodec);
+            ae->encodec_failed = true;
+            audio_stop(ae);
+            emit_error(ae, error);
+            return;
+        }
+        if (info.ready && !info.seeking && (!ae->encodec_ready || ae->encodec_seeking)) {
+            ae->info.samplerate = (int)info.sample_rate;
+            ae->info.channels = (int)info.channels;
+            ae->info.frames = (sf_count_t)info.samples;
+            ae->fed_frames = (int64_t)info.position;
+            ae->file_exhausted = false;
+            ae->encodec_ready = true;
+            ae->encodec_seeking = false;
+            memset(ae->spec_ring, 0, sizeof(ae->spec_ring));
+            redesign_all(ae);
+            emit_tags(ae);
+        }
+        if (ae->encodec_ready && ae->encodec_want_play && !ae->encodec_seeking) {
+            if (!open_device(ae, ae->info.samplerate)) { audio_stop(ae); return; }
+            if (strcmp(ae->state, "loading") == 0) emit_state(ae, "buffering");
+        }
+    }
 
-    if (strcmp(ae->state, "playing") == 0 && has_loaded_audio(ae) &&
-        ae->dev) {
+    bool playing = strcmp(ae->state, "playing") == 0;
+    bool buffering = ae->is_encodec && ae->encodec_want_play && !ae->encodec_seeking
+        && strcmp(ae->state, "buffering") == 0;
+    if ((playing || buffering) && has_loaded_audio(ae) && ae->dev) {
+        if (ae->is_encodec && playing && !ae->file_exhausted && queued_frames(ae) == 0) {
+            SDL_PauseAudioDevice(ae->dev, 1);
+            emit_state(ae, "buffering");
+            playing = false;
+            buffering = true;
+        }
+        double queue_seconds = ae->is_encodec && ae->info.channels == 2 ? 2.0 : QUEUE_TARGET_SEC;
         int64_t target =
-            (int64_t)(QUEUE_TARGET_SEC * ae->info.samplerate);
+            (int64_t)(queue_seconds * ae->info.samplerate);
         while (!ae->file_exhausted && queued_frames(ae) < target) {
             int got = ae->is_midi ? feed_midi_chunk(ae) : feed_chunk(ae);
             if (got == 0)
                 break;
+        }
+        if (ae->is_encodec && !ae->encodec_want_play) return;
+
+        if (ae->is_encodec) {
+            int64_t queued = queued_frames(ae);
+            double startup_seconds = ae->info.channels == 2 ? 1.25 : 0.08;
+            int64_t startup = (int64_t)(startup_seconds * ae->info.samplerate);
+            if (buffering && queued > 0 && (queued >= startup || ae->file_exhausted)) {
+                SDL_PauseAudioDevice(ae->dev, 0);
+                emit_state(ae, "playing");
+            } else if (playing && queued == 0 && !ae->file_exhausted) {
+                SDL_PauseAudioDevice(ae->dev, 1);
+                emit_state(ae, "buffering");
+            }
         }
 
         if (ae->file_exhausted && queued_frames(ae) == 0) {
@@ -766,12 +920,32 @@ void audio_poll(AudioEngine *ae)
     }
 }
 
+AudioSourceInfo audio_source_info(const AudioEngine *ae)
+{
+    AudioSourceInfo result = {0};
+    if (ae == NULL) return result;
+    result.encodec = ae->is_encodec;
+    result.ready = has_loaded_audio(ae);
+    result.buffering = strcmp(ae->state, "loading") == 0 || strcmp(ae->state, "buffering") == 0;
+    result.seekable = result.ready;
+    result.sample_rate = ae->info.samplerate > 0 ? (unsigned int)ae->info.samplerate : 0u;
+    result.channels = ae->info.channels > 0 ? (unsigned int)ae->info.channels : 0u;
+    result.samples = ae->info.frames > 0 ? (uint64_t)ae->info.frames : 0u;
+    if (ae->encodec) {
+        KaEncodecInfo info = ka_encodec_info(ae->encodec);
+        result.profile = info.profile;
+        result.bitrate = info.codebooks * (info.profile == 1u ? 750u : 1500u);
+    }
+    return result;
+}
+
 void audio_cleanup(AudioEngine *ae)
 {
     if (!ae)
         return;
     close_device(ae);
     close_file(ae);
+    ka_encodec_close(ae->encodec);
     clear_midi(ae);
     free(ae->current_file);
     free(ae);

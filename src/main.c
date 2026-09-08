@@ -17,6 +17,7 @@
 #include "config.h"
 #include "consts.h"
 #include "dock.h"
+#include "encodec_source.h"
 #include "filedialog.h"
 #include "headless.h"
 #include "playlist.h"
@@ -141,6 +142,10 @@ static void on_play(void *ud)
     App *app = ud;
     if (strcmp(audio_state(app->audio), "paused") == 0)
         audio_pause(app->audio); /* unpause */
+    else if (audio_source_info(app->audio).encodec
+        && (strcmp(audio_state(app->audio), "loading") == 0
+            || strcmp(audio_state(app->audio), "buffering") == 0))
+        audio_play(app->audio);
     else
         queue_current(app);
 }
@@ -742,6 +747,9 @@ static void save_state(App *app)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "--encodec-worker") == 0) {
+        return ka_encodec_worker_main();
+    }
     const char *skin_arg = "";
     float cli_scale = 0.0f; /* 0 = not given, use config */
     bool headless = false;

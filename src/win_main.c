@@ -300,7 +300,13 @@ void main_window_render(MainWindow *mw)
                    toggles[i]->region.y, skin_toggle_src(toggles[i]));
 
     /* Scrolling title text */
-    text_render_scrolling(&mw->text, buf, mw->title_text, TITLE_DISPLAY.x,
+    char status_title[640];
+    const char *title = mw->title_text;
+    if (strcmp(mw->play_state, "loading") == 0 || strcmp(mw->play_state, "buffering") == 0) {
+        snprintf(status_title, sizeof(status_title), "%s: %s", mw->play_state, mw->title_text);
+        title = status_title;
+    }
+    text_render_scrolling(&mw->text, buf, title, TITLE_DISPLAY.x,
                           TITLE_DISPLAY.y, TITLE_DISPLAY.w,
                           mw->scroll_offset);
 

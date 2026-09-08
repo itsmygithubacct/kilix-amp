@@ -48,6 +48,50 @@ to override the default SoundFont search.
 Formats libsndfile cannot open (m4a/aac/wma) are skipped with an error title,
 and the playlist auto-skips to the next track.
 
+Local `.kenc` files can use the optional native `libkilix-encodec` decoder.
+Build with `make ENCODEC=1` after installing its headers, shared library and
+pkg-config metadata. `ENCODEC_CFLAGS` and `ENCODEC_LIBS` can select an explicit
+development installation. The default build has no EnCodec runtime dependency
+and reports an unavailable-model error for these files.
+
+Set `KILIX_ENCODEC_24KHZ_DIR` and/or `KILIX_ENCODEC_48KHZ_DIR` to the verified
+asset directories supplied before launch. Only the directory for the selected
+file profile is used. `KILIX_ENCODEC_THREADS` accepts `1` (default) or `2`.
+Amp never installs or downloads a model. Missing or incompatible assets produce
+an error, without claiming playback. The shared library verifies the exact
+graph population; regular input files are copied into sealed private snapshots.
+
+Both windowed and headless playback use one asynchronous source adapter and the
+existing preamp/EQ/volume/pan/device path. An owned same-executable worker loads
+models and decodes bounded records over a private socketpair; the UI performs
+only nonblocking IPC and owned-child reaping. Pause keeps bounded prefetch;
+stop or a source change kills only that worker. Workers inherit no application
+FDs beyond their private channel and stderr, and die if their parent exits.
+Each has a 2 GiB address-space ceiling, 512 MiB file-size ceiling and 64 FD
+ceiling. At most eight unreaped workers can exist during rapid source changes.
+
+The 24 kHz mono profile supports 3/6/12 kb/s; 48 kHz stereo supports
+3/6/12/24 kb/s. Seek starts at the verified preceding one-second mono epoch or
+47520-sample stereo boundary; stereo pre-roll is handled by the shared decoder.
+Old queued PCM is discarded and playback resumes after the worker acknowledges
+the actual boundary. Loading and queue starvation are displayed as `loading`
+and `buffering`. Stereo playback buffers at least 1.25 seconds before starting
+(or the entire remainder for a shorter file), with a two-second device-queue
+target. These local-file controls do not yet expose live sources or protocol-2
+source metadata; they do not assert hardware or listening qualification.
+
+For explicit native integration checks, build
+`make ENCODEC=1 build-encodec/native_encodec`, then run
+`python3 tests/run_encodec.py --test-binary build-encodec/native_encodec
+--codec-command /path/to/kenc --mono-assets /path/to/mono
+--stereo-assets /path/to/stereo --evidence-dir /path/to/new-evidence-directory`.
+The test creates synthetic local WAVs at all seven profile/rate combinations,
+checks exact worker/pre-DSP PCM against the shared decoder, and exercises seek,
+pause, EOF, cancellation and unrelated-child preservation. `make ENCODEC=1 test`
+also exercises malformed private worker replies using a separate test binary.
+`tests/headless_encodec.py` checks the real player socket with explicit fixtures;
+its dummy SDL output belongs only to that test process.
+
 ## Building
 
 ```bash

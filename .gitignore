@@ -1,4 +1,6 @@
 build/
+build-encodec/
+build-ubsan/
 build-asan/
 kilix-amp
 *.o

@@ -9,7 +9,7 @@
 static const char *AUDIO_EXTENSIONS[] = {
     ".mp3", ".mp2", ".mp1", ".ogg", ".oga", ".opus", ".flac", ".wav",
     ".aac", ".m4a", ".wma", ".ape", ".mpc", ".wv",   ".aiff", ".aif",
-    ".mid", ".midi", ".mod", ".s3m", ".xm",  ".it",
+    ".mid", ".midi", ".mod", ".s3m", ".xm",  ".it", ".kenc",
 };
 
 bool playlist_is_audio_ext(const char *path)

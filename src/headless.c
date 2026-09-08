@@ -22,7 +22,7 @@ typedef struct {
     /* Loading is deferred to the next tick exactly as the windowed player
      * defers it: opening a file can take real time (a MIDI render most of
      * all), and a reply must not wait on the decoder. */
-    bool pending_play;
+    bool pending_play, pending_pause;
     int pending_index;
     /* Stops an all-unplayable playlist from skipping forever under repeat. */
     int auto_skip_count;
@@ -59,6 +59,7 @@ static bool hl_queue_current(Headless *h)
         return false;
     h->pending_index = playlist_current_index(h->playlist);
     h->pending_play = true;
+    h->pending_pause = false;
     hl_set_title_from_track(h, track);
     return true;
 }
@@ -70,6 +71,7 @@ static bool hl_queue_index(Headless *h, int index)
         return false;
     h->pending_index = index;
     h->pending_play = true;
+    h->pending_pause = false;
     hl_set_title_from_track(h, track);
     return true;
 }
@@ -84,20 +86,25 @@ static void hl_play_pending(Headless *h)
         return;
     audio_load(h->audio, track->filepath);
     audio_play(h->audio);
+    if (h->pending_pause) audio_pause(h->audio);
+    h->pending_pause = false;
 }
 
 static void hl_resume_or_play(Headless *h)
 {
+    if (h->pending_play) { h->pending_pause = false; return; }
     if (strcmp(audio_state(h->audio), "paused") == 0)
         audio_pause(h->audio); /* audio_pause toggles */
-    else
+    else if (strcmp(audio_state(h->audio), "stopped") == 0)
         hl_queue_current(h);
 }
 
 static void hl_toggle(Headless *h)
 {
+    if (h->pending_play) { h->pending_pause = !h->pending_pause; return; }
     const char *state = audio_state(h->audio);
-    if (strcmp(state, "playing") == 0 || strcmp(state, "paused") == 0)
+    if (strcmp(state, "playing") == 0 || strcmp(state, "paused") == 0
+        || strcmp(state, "loading") == 0 || strcmp(state, "buffering") == 0)
         audio_pause(h->audio);
     else
         hl_queue_current(h);
@@ -169,7 +176,7 @@ static const char *hl_state_name(const Headless *h)
     /* A queued track has been accepted but not opened yet; saying "playing"
      * before the decoder has seen the file would be a guess. */
     if (h->pending_play)
-        return "loading";
+        return h->pending_pause ? "paused" : "loading";
     return audio_state(h->audio);
 }
 
@@ -239,7 +246,10 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
     } else if (strcmp(cmd, "toggle") == 0) {
         hl_toggle(h);
     } else if (strcmp(cmd, "pause") == 0) {
-        if (strcmp(audio_state(h->audio), "playing") == 0)
+        if (h->pending_play) h->pending_pause = true;
+        else if (strcmp(audio_state(h->audio), "playing") == 0
+            || strcmp(audio_state(h->audio), "loading") == 0
+            || strcmp(audio_state(h->audio), "buffering") == 0)
             audio_pause(h->audio);
     } else if (strcmp(cmd, "stop") == 0) {
         h->pending_play = false;
