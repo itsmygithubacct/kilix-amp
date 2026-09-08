@@ -12,7 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static const char *asset24, *asset48;
+static const char *asset24, *asset48, *content_root;
 static float *reference;
 static kenc_file_info metadata;
 static unsigned int channels, rate;
@@ -35,7 +35,7 @@ static void load_reference(const char *path)
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     ASSERT_TRUE(fd >= 0);
     kenc_file_source *source = NULL;
-    ASSERT_EQ_INT(kenc_file_source_create(&source, fd, asset24, asset48, 1u, &metadata), KENC_OK);
+    ASSERT_EQ_INT(kenc_file_source_create(&source, fd, asset24, asset48, 2u, &metadata), KENC_OK);
     close(fd);
     if (!source || metadata.samples > 480000u) exit(2);
     channels = metadata.profile == 1u ? 1u : 2u;
@@ -80,7 +80,9 @@ static void drain_exact(KaEncodec *source, uint64_t start)
 
 static void test_adapter(const char *path)
 {
-    KaEncodec *source = ka_encodec_open(path, asset24, asset48, 1u);
+    KaEncodec *source = content_root
+        ? ka_encodec_open_installed_source(KA_ENCODEC_FILE, path, -1, content_root, 2u)
+        : ka_encodec_open(path, asset24, asset48, 2u);
     ASSERT_TRUE(source != NULL);
     ASSERT_TRUE(wait_ready(source));
     KaEncodecInfo info = ka_encodec_info(source);
@@ -215,7 +217,9 @@ static void test_cancellation(const char *path)
     if (unrelated <= 0) exit(2);
     size_t before = count_fds();
     for (unsigned int i = 0u; i < 12u; ++i) {
-        KaEncodec *source = ka_encodec_open(path, asset24, asset48, 1u);
+        KaEncodec *source = content_root
+            ? ka_encodec_open_installed_source(KA_ENCODEC_FILE, path, -1, content_root, 2u)
+            : ka_encodec_open(path, asset24, asset48, 2u);
         ASSERT_TRUE(source != NULL && !ka_encodec_info(source).failed);
         ka_encodec_close(source);
         for (unsigned int wait = 0u; wait < 10u; ++wait) { ka_encodec_reap(); SDL_Delay(2u); }
@@ -232,15 +236,16 @@ static void test_cancellation(const char *path)
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--encodec-worker") == 0) return ka_encodec_worker_main();
-    if (argc != 4) { fprintf(stderr, "usage: native_encodec FILE.kenc MONO_ASSETS STEREO_ASSETS\n"); return 2; }
+    if (argc != 5) { fprintf(stderr, "usage: native_encodec FILE.kenc MONO_ASSETS STEREO_ASSETS CONTENT_ROOT|--development-only\n"); return 2; }
     asset24 = argv[2]; asset48 = argv[3];
+    content_root = strcmp(argv[4], "--development-only") ? argv[4] : NULL;
     setenv("SDL_AUDIODRIVER", "dummy", 1);
-    setenv("KILIX_ENCODEC_24KHZ_DIR", asset24, 1);
-    setenv("KILIX_ENCODEC_48KHZ_DIR", asset48, 1);
-    setenv("KILIX_ENCODEC_THREADS", "1", 1);
+    if (content_root) setenv("KILIX_CONTENT_ROOT", content_root, 1);
+    setenv("KILIX_ENCODEC_THREADS", "2", 1);
     load_reference(argv[1]);
     test_adapter(argv[1]);
-    test_audio(argv[1]);
+    if (content_root) test_audio(argv[1]);
+    else puts("Explicit development byte/path checks: shared installed audio path not exercised.");
     test_cancellation(argv[1]);
     free(reference); SDL_Quit();
     return kt_summary("native EnCodec worker/audio");

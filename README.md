@@ -50,16 +50,27 @@ and the playlist auto-skips to the next track.
 
 Local `.kenc` files can use the optional native `libkilix-encodec` decoder.
 Build with `make ENCODEC=1` after installing its headers, shared library and
-pkg-config metadata. `ENCODEC_CFLAGS` and `ENCODEC_LIBS` can select an explicit
-development installation. The default build has no EnCodec runtime dependency
+pkg-config metadata. Build that library with `ONNX=1 CONTENT=1` and the exact
+`CONTENT_SOURCE` and `CONTENT_COMMIT` supplied by the application closure.
+Its embedded catalog, admission helper and build receipt travel with the
+library. `ENCODEC_CFLAGS` and `ENCODEC_LIBS` can select an explicit development
+installation. The default build has no EnCodec runtime dependency
 and reports an unavailable-model error for these files.
 
-Set `KILIX_ENCODEC_24KHZ_DIR` and/or `KILIX_ENCODEC_48KHZ_DIR` to the verified
-asset directories supplied before launch. Only the directory for the selected
-file profile is used. `KILIX_ENCODEC_THREADS` accepts `1` or `2` (default).
-Amp never installs or downloads a model. Missing or incompatible assets produce
-an error, without claiming playback. The shared library verifies the exact
-graph population; regular input files are copied into sealed private snapshots.
+Normal file and live opens require the selected model to be installed and
+admitted by the packaged Kilix content catalog and durable license receipts.
+`KILIX_CONTENT_ROOT` selects the content storage root; otherwise Amp uses the
+account's NSS home plus `.local/gpu_terminal/kilix/data/desktop-apps`. A host
+that relocates Kilix storage must pass its resolved content root. The receipt
+store follows `XDG_STATE_HOME` under the content API's ownership checks.
+`KILIX_ENCODEC_THREADS` accepts `1` or `2` (default).
+Amp never installs or downloads a model. Missing receipts, undeclared assets,
+or incompatible bytes produce an error. The helper verifies the full admitted
+population, including its notices, then passes only the exact 9/4 native files
+as sealed descriptors. Native compiled graph hashes and runtime checks still
+apply. Admission repeats for every model load; graph-directory environment
+variables do not authorize normal playback. Regular input audio files are
+also copied into sealed private snapshots.
 
 Both windowed and headless playback use one asynchronous source adapter and the
 existing preamp/EQ/volume/pan/device path. An owned same-executable worker loads
@@ -96,7 +107,12 @@ For explicit native integration checks, build
 `make ENCODEC=1 build-encodec/native_encodec`, then run
 `python3 tests/run_encodec.py --test-binary build-encodec/native_encodec
 --codec-command /path/to/kenc --mono-assets /path/to/mono
---stereo-assets /path/to/stereo --evidence-dir /path/to/new-evidence-directory`.
+--stereo-assets /path/to/stereo --content-root /path/to/installed-content
+--evidence-dir /path/to/new-evidence-directory`.
+The receipt environment and embedded catalog must admit the selected profiles;
+`--profile 24k` or `--profile 48k` narrows the run. Explicit
+`--development-only` replaces `--content-root` for byte/path worker fixtures
+and omits the installed shared-audio checks. It supplies no admission credit.
 The test creates synthetic local WAVs at all seven profile/rate combinations,
 checks exact worker/pre-DSP PCM against the shared decoder, and exercises seek,
 pause, EOF, cancellation and unrelated-child preservation. `make ENCODEC=1 test`
@@ -105,10 +121,20 @@ also exercises malformed private worker replies using a separate test binary.
 its dummy SDL output belongs only to that test process.
 Build `make ENCODEC=1 build-encodec/native_live` and pass the mono asset
 directory and a synthetic mono `.kenc` file with at least two seconds of audio
-to test live input, recovery and the shared audio path. Run
+plus the content root to test live input, recovery and the shared audio path.
+An explicit `--development-only` final argument instead omits the installed
+shared-audio check. Run
 `python3 tests/headless_live.py ./kilix-amp /path/to/mono.kenc
 --evidence-dir /path/to/new-directory` for actual protocol-2 stdin and Unix
-reconnect controls. The same asset environment variables must be set.
+reconnect controls. `KILIX_CONTENT_ROOT` and the matching receipt environment
+must select an admitted mono population for these actual-player checks.
+
+`tests/headless_admission_stereo.py` exercises the actual player against a
+reviewed stereo-only catalog and matching installed assets/receipts. It checks
+normal playback, repeated admission after receipt and file changes, notice and
+membership refusal, and unadmitted mono file/live refusal despite valid legacy
+graph directories. All mutations use private copies; the original installed
+population and receipts must remain byte-identical.
 
 ## Building
 

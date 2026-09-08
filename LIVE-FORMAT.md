@@ -1,8 +1,10 @@
 # Live EnCodec input
 
 `--encodec-stdin` and `--encodec-socket PATH` consume the same binary stream in
-windowed and headless Amp. They require a native EnCodec build and the verified
-24 kHz model selected through `KILIX_ENCODEC_24KHZ_DIR`. The selected profile is
+windowed and headless Amp. They require a native EnCodec build with packaged
+content admission and the installed 24 kHz model with its durable receipts.
+`KILIX_CONTENT_ROOT` selects storage; graph-directory variables do not admit a
+model. The selected profile is
 mono, 24 kHz, 3/6/12 kb/s (4/8/16 codebooks). Stereo remains a local-file format.
 
 Start with the canonical 64-byte header produced by

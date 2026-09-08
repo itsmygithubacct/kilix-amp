@@ -20,6 +20,8 @@ typedef struct {
 /* Main-loop-owned adapter. The worker owns only decoding; Amp remains the
  * sole owner of playback devices and DSP. All parent I/O and child reaping
  * are nonblocking. Rapid source changes have a fixed eight-child ceiling. */
+/* Development-only byte/path interfaces for explicit native fixtures. Normal
+ * application playback must use the installed admission interface below. */
 KaEncodec *ka_encodec_open(const char *path, const char *mono_assets,
     const char *stereo_assets, unsigned int threads);
 /* Live stdin duplicates the caller's descriptor, without changing its flags.
@@ -28,6 +30,12 @@ KaEncodec *ka_encodec_open(const char *path, const char *mono_assets,
  * is an explicit new open, with no automatic retry loop. */
 KaEncodec *ka_encodec_open_source(KaEncodecKind kind, const char *path, int input_fd,
     const char *mono_assets, const char *stereo_assets, unsigned int threads);
+/* Installed application path: fresh packaged catalog/receipt admission for
+ * every model load, with no fallback to graph directories. A NULL storage root
+ * uses the NSS home and Kilix's default desktop-apps directory. Host launchers
+ * should pass their actual resolved root when storage is relocated. */
+KaEncodec *ka_encodec_open_installed_source(KaEncodecKind kind, const char *path, int input_fd,
+    const char *content_root, unsigned int threads);
 void ka_encodec_poll(KaEncodec *source);
 /* >0 frames, 0 buffering, -1 EOF, -2 error. PCM is interleaved float. */
 int ka_encodec_read(KaEncodec *source, float *pcm, size_t scalar_capacity,

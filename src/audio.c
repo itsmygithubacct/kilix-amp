@@ -208,8 +208,8 @@ static void start_encodec(AudioEngine *ae)
         }
     }
     ae->encodec_threads = count;
-    ae->encodec = ka_encodec_open_source(ae->encodec_kind, ae->current_file, ae->encodec_input,
-        getenv("KILIX_ENCODEC_24KHZ_DIR"), getenv("KILIX_ENCODEC_48KHZ_DIR"), count);
+    ae->encodec = ka_encodec_open_installed_source(ae->encodec_kind, ae->current_file, ae->encodec_input,
+        getenv("KILIX_CONTENT_ROOT"), count);
     ae->encodec_input = -1; /* stdin is a single-use stream, never replayed. */
     ae->encodec_ready = false;
     ae->encodec_seeking = false;

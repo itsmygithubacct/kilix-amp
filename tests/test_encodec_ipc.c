@@ -4,7 +4,9 @@
 #include "encodec_source.h"
 #include <SDL.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdint.h>
 #include <sys/socket.h>
@@ -46,7 +48,22 @@ static int fixture_peer(void)
     TestHeader response = {.magic = 0x4b414543, .version = 2u, .kind = 10u,
         .generation = 1u, .samples = 50003u, .rate = 24000u, .channels = 1u, .profile = 1u, .codebooks = 4u};
     float pcm[4097] = {0};
-    bool live = !strncmp(mode, "live-", 5u);
+    TestHeader load;
+    memcpy(&load, packet, sizeof(load));
+    bool installed = !strncmp(mode, "installed-", 10u);
+    bool live = !strncmp(mode, "live-", 5u) || (installed && (load.reserved & 0xffu) != KA_ENCODEC_FILE);
+    if (installed) {
+        const char *root = mode + strlen(mode) + 1u;
+        char expected[PATH_MAX], storage[16384]; struct passwd account, *found = NULL;
+        if (!strcmp(mode, "installed-default")) {
+            if (getpwuid_r(geteuid(), &account, storage, sizeof(storage), &found) || !found) return 2;
+            int size = snprintf(expected, sizeof(expected), "%s/.local/gpu_terminal/kilix/data/desktop-apps", account.pw_dir);
+            if (size <= 0 || (size_t)size >= sizeof(expected)) return 2;
+        } else strcpy(expected, "/var/lib/kenc-fixture");
+        if ((load.reserved & 0x100u) == 0u || (load.reserved & ~0x103u) != 0u
+            || load.result != 2u || strcmp(root, expected) || root[strlen(root) + 1u] != '\0'
+            || length != (ssize_t)(sizeof(load) + strlen(mode) + strlen(root) + 3u)) return 2;
+    }
     if (live) { response.samples = 0u; response.reserved = 1u; }
     if (!strcmp(mode, "live-duration")) response.samples = 1u;
     if (!strcmp(mode, "live-profile")) { response.profile = 2u; response.rate = 48000u; response.channels = 2u; }
@@ -171,6 +188,39 @@ static void test_live_metadata_refusals(void)
         ka_encodec_close(source); SDL_Delay(2u); ka_encodec_reap();
     }
 }
+
+static void test_installed_request_binding(void)
+{
+    int input = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    ASSERT_TRUE(input >= 0);
+    for (unsigned int kind = KA_ENCODEC_FILE; kind <= KA_ENCODEC_SOCKET; ++kind) {
+        KaEncodec *source = ka_encodec_open_installed_source((KaEncodecKind)kind, "installed-root", input,
+            "/var/lib/kenc-fixture", 2u);
+        ASSERT_TRUE(source != NULL && await_response(source, false));
+        ASSERT_FALSE(ka_encodec_info(source).failed);
+        ASSERT_EQ_INT(ka_encodec_info(source).live, kind != KA_ENCODEC_FILE);
+        ka_encodec_close(source); SDL_Delay(2u); ka_encodec_reap();
+    }
+    const char *old_home = getenv("HOME"); char *saved_home = old_home ? strdup(old_home) : NULL;
+    setenv("HOME", "/not-the-account-home", 1);
+    for (unsigned int i = 0u; i < 2u; ++i) {
+        KaEncodec *source = ka_encodec_open_installed_source(KA_ENCODEC_FILE, "installed-default", -1,
+            i ? "" : NULL, 2u);
+        ASSERT_TRUE(source != NULL && await_response(source, false));
+        ka_encodec_close(source); SDL_Delay(2u); ka_encodec_reap();
+    }
+    if (saved_home) { setenv("HOME", saved_home, 1); free(saved_home); } else unsetenv("HOME");
+    char oversized[PATH_MAX + 1u]; memset(oversized, 'x', sizeof(oversized));
+    oversized[0] = '/'; oversized[PATH_MAX] = '\0';
+    const char *bad_roots[] = {"relative/root", oversized};
+    for (unsigned int i = 0u; i < 2u; ++i) {
+        KaEncodec *source = ka_encodec_open_installed_source(KA_ENCODEC_FILE, "installed-root", -1, bad_roots[i], 2u);
+        ASSERT_TRUE(source != NULL && ka_encodec_info(source).failed);
+        ASSERT_EQ_INT(ka_encodec_error_code(source), 1u);
+        ka_encodec_close(source);
+    }
+    close(input);
+}
 #endif
 
 int main(int argc, char **argv)
@@ -180,6 +230,7 @@ int main(int argc, char **argv)
     RUN(test_refusals);
     RUN(test_private_descriptors);
     RUN(test_live_metadata_refusals);
+    RUN(test_installed_request_binding);
 #else
     (void)argc; (void)argv;
     KaEncodec *source = ka_encodec_open("missing.kenc", "", "", 1u);

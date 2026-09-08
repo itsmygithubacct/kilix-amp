@@ -239,7 +239,6 @@ static void shared_audio_case(void)
     if (child == 0) { close(fds[0]); producer(fds[1], "normal"); close(fds[1]); _exit(0); }
     close(fds[1]);
     setenv("SDL_AUDIODRIVER", "dummy", 1);
-    setenv("KILIX_ENCODEC_24KHZ_DIR", assets, 1);
     unsetenv("KILIX_ENCODEC_THREADS"); /* Exercise the measured two-thread default. */
     tapped = 0u; tap_exact = true; audio_failed = false;
     AudioEngine *audio = audio_new();
@@ -285,7 +284,7 @@ static void shared_audio_case(void)
 int main(int argc, char **argv)
 {
     if (argc == 2 && !strcmp(argv[1], "--encodec-worker")) return ka_encodec_worker_main();
-    if (argc != 3) return 2;
+    if (argc != 4) return 2;
     signal(SIGPIPE, SIG_IGN);
     assets = argv[1]; load_reference(argv[2]);
     pipe_case("normal", 0u); pipe_case("join", 0u); pipe_case("loss", 0u);
@@ -296,7 +295,10 @@ int main(int argc, char **argv)
     pipe_case("packet-truncated", 4u); pipe_case("packet-malformed", 5u);
     pipe_case("packet-empty", 4u);
     pipe_case("timeout", 7u); pipe_case("trickle", 7u);
-    shared_audio_case();
+    if (strcmp(argv[3], "--development-only")) {
+        setenv("KILIX_CONTENT_ROOT", argv[3], 1);
+        shared_audio_case();
+    } else puts("Explicit development live-byte checks: installed shared audio path not exercised.");
     thread_selection_case();
     return kt_summary("native EnCodec live");
 }
