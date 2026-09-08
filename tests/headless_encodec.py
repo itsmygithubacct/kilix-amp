@@ -76,6 +76,13 @@ def main():
                         time.sleep(.01)
                     else:
                         raise AssertionError(f'seek never acknowledged: {status}')
+                    prior = status['pos']
+                    client.sendall(b'{"protocol":2,"cmd":"seek","pos":-1}\n')
+                    refused = json.loads(stream.readline())
+                    assert refused['protocol'] == 2 and refused['ok'] is False
+                    assert refused['error_code'] == 'INVALID_REQUEST' and refused['error_recoverable'] is True
+                    assert state()['pos'] == prior
+                    checks += 3
                     assert commands({'cmd': 'toggle'})[0]['state'] in {'buffering', 'playing'}
                     assert commands({'cmd': 'stop'})[0]['state'] == 'stopped'
                     commands({'cmd': 'play'}, {'cmd': 'stop'})

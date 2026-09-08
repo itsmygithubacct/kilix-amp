@@ -76,6 +76,7 @@ static void producer(int fd, const char *mode)
         if ((!strcmp(mode, "join") && i < 7u) || (!strcmp(mode, "loss") && i == 10u)) continue;
         memset(prefix, 0, sizeof(prefix)); prefix[0] = (uint8_t)sizes[i];
         write_all(fd, prefix, sizeof(prefix));
+        if (!strcmp(mode, "packet-empty")) return;
         if (!strcmp(mode, "packet-truncated")) { write_all(fd, records[i], sizes[i] - 1u); return; }
         uint8_t copy[KENC_MAX_PACKET_BYTES]; memcpy(copy, records[i], sizes[i]);
         if (!strcmp(mode, "packet-malformed")) copy[0]++;
@@ -293,6 +294,7 @@ int main(int argc, char **argv)
     pipe_case("header", 5u); pipe_case("stereo", 5u); pipe_case("prefix", 4u);
     pipe_case("disconnect", 8u); pipe_case("oversize", 5u);
     pipe_case("packet-truncated", 4u); pipe_case("packet-malformed", 5u);
+    pipe_case("packet-empty", 4u);
     pipe_case("timeout", 7u); pipe_case("trickle", 7u);
     shared_audio_case();
     thread_selection_case();

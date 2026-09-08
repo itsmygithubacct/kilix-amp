@@ -108,6 +108,10 @@ def run(binary, path, evidence, unix=False):
 
                 assert command('ping')['live_sources'] is True
                 checks += 1
+                for value in ({'protocol': 2}, {'protocol': 2, 'cmd': []}, {'protocol': 2, 'cmd': ''}):
+                    reply = request(value, False)
+                    assert reply['protocol'] == 2 and reply['error_code'] == 'INVALID_REQUEST' and reply['error_recoverable'] is True
+                    checks += 1
                 for protocol in [0, 3, True, '2', 2.0]:
                     request(dict(protocol=protocol, cmd='quit'), False)
                     assert process.poll() is None
@@ -129,6 +133,10 @@ def run(binary, path, evidence, unix=False):
                     assert len(accepted) == 1, accepted
                     assert state()['source_error_code'] == 8
                     checks += 5
+                    cleared = command('clear')
+                    assert cleared['source_type'] == 'none' and cleared['source_error_code'] == 0
+                    assert not cleared['source_error_message'] and not cleared['source_error_recoverable']
+                    checks += 2
                     command('open', source_type='encodec-unix', path=str(source))
                 deadline = time.monotonic() + 30
                 played = False

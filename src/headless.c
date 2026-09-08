@@ -252,7 +252,7 @@ static void hl_write_status(Headless *h, JsonBuf *reply)
             json_kv_null(reply, "wire_pts_ms"); json_kv_null(reply, "wire_epoch");
         }
         json_kv_int(reply, "source_error_code", info.error_code);
-        json_kv_str(reply, "source_error_message", h->pending_play ? "" : audio_error(h->audio));
+        json_kv_str(reply, "source_error_message", file && *file && !h->pending_play ? audio_error(h->audio) : "");
         json_kv_bool(reply, "source_error_recoverable", info.error_code != 0u);
     }
 }
@@ -394,6 +394,9 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         if (!json_get_num(request, "pos", &seconds)) {
             hl_refuse(h, reply, "INVALID_REQUEST", "seek needs a \"pos\" in seconds");
             return;
+        }
+        if (protocol == 2 && seconds < 0) {
+            hl_refuse(h, reply, "INVALID_REQUEST", "seek position is out of range"); return;
         }
         if (seconds < 0)
             seconds = 0;

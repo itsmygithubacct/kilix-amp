@@ -243,6 +243,7 @@ static void serve_line(ControlClient *c, char *line, ControlHandler handler,
     json_kv_int(&reply, "protocol", supported ? protocol : CONTROL_PROTOCOL);
 
     char cmd[64];
+    bool dispatched = false;
     if (!valid)
         reply_error(&reply, "malformed request");
     else if (!supported) {
@@ -252,8 +253,14 @@ static void serve_line(ControlClient *c, char *line, ControlHandler handler,
         reply_error(&reply, "request needs a \"cmd\" string");
     else if (!cmd[0])
         reply_error(&reply, "empty command");
-    else
+    else {
         handler(ud, cmd, line, &reply);
+        dispatched = true;
+    }
+    if (supported && protocol == 2 && !dispatched) {
+        json_kv_str(&reply, "error_code", "INVALID_REQUEST");
+        json_kv_bool(&reply, "error_recoverable", true);
+    }
 
     json_obj_end(&reply);
     client_queue(c, json_text(&reply));

@@ -396,7 +396,8 @@ static uint64_t monotonic_ms(void)
 /* One absolute deadline covers a whole framed record, including its length.
  * No caller length causes allocation. The control channel stays observable
  * during a stalled producer, and parent closure ends this owned worker. */
-static uint32_t live_read(int input, bool is_socket, uint8_t *bytes, size_t count, uint64_t deadline)
+static uint32_t live_read(int input, bool is_socket, uint8_t *bytes, size_t count,
+                         uint64_t deadline, bool record_started)
 {
     size_t done = 0u;
     while (done < count) {
@@ -412,7 +413,7 @@ static uint32_t live_read(int input, bool is_socket, uint8_t *bytes, size_t coun
         ssize_t got = is_socket ? recv(input, bytes + done, count - done, MSG_DONTWAIT)
             : read(input, bytes + done, count - done);
         if (got < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) { continue; }
-        if (got <= 0) { return done > 0u ? KENC_ERR_TRUNCATED : LIVE_ERR_DISCONNECTED; }
+        if (got <= 0) { return done > 0u || record_started ? KENC_ERR_TRUNCATED : LIVE_ERR_DISCONNECTED; }
         done += (size_t)got;
     }
     return KENC_OK;
@@ -516,7 +517,7 @@ static int worker_live(const Header *request, char *const paths[3])
     uint32_t result = input < 0 ? LIVE_ERR_ENDPOINT : KENC_OK;
     uint8_t bytes[KENC_FILE_HEADER_BYTES]; kenc_file_info info;
     kenc_model *model = NULL; kenc_decoder *decoder = NULL;
-    if (result == KENC_OK) { result = live_read(input, is_socket, bytes, sizeof(bytes), monotonic_ms() + LIVE_TIMEOUT_MS); }
+    if (result == KENC_OK) { result = live_read(input, is_socket, bytes, sizeof(bytes), monotonic_ms() + LIVE_TIMEOUT_MS, false); }
     if (result == KENC_OK) { result = kenc_file_header_read(&info, bytes, sizeof(bytes)); }
     if (result == KENC_OK && (info.flags != KENC_FILE_LIVE || info.profile != KENC_FILE_PROFILE_MONO)) {
         result = KENC_ERR_PROTOCOL;
@@ -537,7 +538,7 @@ static int worker_live(const Header *request, char *const paths[3])
         uint8_t prefix[4], packet[KENC_MAX_PACKET_BYTES];
         uint64_t deadline = monotonic_ms() + LIVE_TIMEOUT_MS;
         if (recovery_deadline != 0u && recovery_deadline < deadline) { deadline = recovery_deadline; }
-        result = live_read(input, is_socket, prefix, sizeof(prefix), deadline);
+        result = live_read(input, is_socket, prefix, sizeof(prefix), deadline, false);
         if (result != KENC_OK) { break; }
         uint32_t length = (uint32_t)prefix[0] | (uint32_t)prefix[1] << 8u
             | (uint32_t)prefix[2] << 16u | (uint32_t)prefix[3] << 24u;
@@ -547,7 +548,7 @@ static int worker_live(const Header *request, char *const paths[3])
             break;
         }
         if (length > sizeof(packet)) { result = KENC_ERR_PROTOCOL; break; }
-        result = live_read(input, is_socket, packet, length, deadline);
+        result = live_read(input, is_socket, packet, length, deadline, true);
         if (result != KENC_OK) { break; }
         kenc_packet_metadata metadata;
         result = kenc_packet_metadata_read(&metadata, packet, length, &options);

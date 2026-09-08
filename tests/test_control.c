@@ -186,6 +186,29 @@ static void test_malformed_is_answered_not_dispatched(void)
     control_close(cs);
 }
 
+static void test_v2_command_shape_has_structured_errors(void)
+{
+    char path[96];
+    ControlServer *cs = listen_at("v2-command.sock", path, sizeof(path));
+    ASSERT_TRUE(cs != NULL);
+    if (!cs) return;
+    const char *cases[] = {"{\"protocol\":2}\n", "{\"protocol\":2,\"cmd\":[]}\n", "{\"protocol\":2,\"cmd\":\"\"}\n"};
+    for (size_t i = 0; i < KA_LEN(cases); ++i) {
+        int fd = client_connect(path), before = g_calls;
+        ASSERT_TRUE(fd >= 0);
+        ASSERT_TRUE(send(fd, cases[i], strlen(cases[i]), 0) > 0);
+        control_poll(cs, test_handler, NULL, 1000);
+        const char *reply = read_line(fd);
+        ASSERT_TRUE(strstr(reply, "\"protocol\":2") != NULL);
+        ASSERT_TRUE(strstr(reply, "\"ok\":false") != NULL);
+        ASSERT_TRUE(strstr(reply, "\"error_code\":\"INVALID_REQUEST\"") != NULL);
+        ASSERT_TRUE(strstr(reply, "\"error_recoverable\":true") != NULL);
+        ASSERT_EQ_INT(g_calls, before);
+        close(fd);
+    }
+    control_close(cs);
+}
+
 /* An oversized line is refused with a reply, and the connection recovers. */
 static void test_request_too_long(void)
 {
@@ -456,6 +479,7 @@ int main(void)
     RUN(test_partial_request);
     RUN(test_crlf);
     RUN(test_malformed_is_answered_not_dispatched);
+    RUN(test_v2_command_shape_has_structured_errors);
     RUN(test_request_too_long);
     RUN(test_idle_client_dropped);
     RUN(test_socket_is_owner_only);
