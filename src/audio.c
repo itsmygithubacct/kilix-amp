@@ -41,6 +41,13 @@ struct AudioEngine {
     KaEncodec *encodec;
     bool is_encodec, encodec_ready, encodec_want_play, encodec_seeking, encodec_failed;
     int encodec_seek_from_ms;
+    KaEncodecKind encodec_kind;
+    int encodec_input;
+    bool stdin_used;
+    KaEncodecInfo encodec_info;
+    unsigned int error_code;
+    unsigned int encodec_threads;
+    char error[256];
 
     SDL_AudioDeviceID dev;
     int dev_rate;
@@ -73,6 +80,8 @@ static void emit_state(AudioEngine *ae, const char *state)
 
 static void emit_error(AudioEngine *ae, const char *msg)
 {
+    snprintf(ae->error, sizeof(ae->error), "%s", msg);
+    if (ae->error_code == 0u) ae->error_code = 3u;
     if (ae->cbs.error)
         ae->cbs.error(ae->cbs.ud, msg);
 }
@@ -109,6 +118,7 @@ AudioEngine *audio_new(void)
         abort();
     snprintf(ae->state, sizeof(ae->state), "stopped");
     ae->volume = 1.0;
+    ae->encodec_input = -1;
     ae->preamp = 1.0;
     ae->eq_enabled = true;
     ae->info.samplerate = 44100;
@@ -185,21 +195,27 @@ static bool is_encodec_path(const char *path)
 static void start_encodec(AudioEngine *ae)
 {
     const char *threads = getenv("KILIX_ENCODEC_THREADS");
-    unsigned int count = 1u;
+    unsigned int count = 2u;
+    ae->encodec_threads = 0u;
     if (threads && *threads) {
         if (strcmp(threads, "2") == 0) count = 2u;
-        else if (strcmp(threads, "1") != 0) {
+        else if (strcmp(threads, "1") == 0) count = 1u;
+        else {
             ae->encodec_failed = true;
+            ae->error_code = 1u;
             emit_error(ae, "KILIX_ENCODEC_THREADS must be 1 or 2");
             return;
         }
     }
-    ae->encodec = ka_encodec_open(ae->current_file,
+    ae->encodec_threads = count;
+    ae->encodec = ka_encodec_open_source(ae->encodec_kind, ae->current_file, ae->encodec_input,
         getenv("KILIX_ENCODEC_24KHZ_DIR"), getenv("KILIX_ENCODEC_48KHZ_DIR"), count);
+    ae->encodec_input = -1; /* stdin is a single-use stream, never replayed. */
     ae->encodec_ready = false;
     ae->encodec_seeking = false;
     if (ae->encodec == NULL || ka_encodec_info(ae->encodec).failed) {
         ae->encodec_failed = true;
+        ae->error_code = ka_encodec_error_code(ae->encodec);
         emit_error(ae, ka_encodec_error(ae->encodec));
         ka_encodec_close(ae->encodec); ae->encodec = NULL;
         return;
@@ -459,6 +475,10 @@ void audio_load(AudioEngine *ae, const char *filepath)
     ae->current_file = ka_strdup(filepath);
     ae->is_encodec = encoded;
     ae->encodec_failed = false;
+    ae->encodec_kind = KA_ENCODEC_FILE;
+    ae->encodec_input = -1;
+    memset(&ae->encodec_info, 0, sizeof(ae->encodec_info));
+    ae->error[0] = '\0'; ae->error_code = 0u;
 
     memset(&ae->info, 0, sizeof(ae->info));
     if (encoded) {
@@ -492,6 +512,25 @@ void audio_load(AudioEngine *ae, const char *filepath)
     emit_tags(ae);
 }
 
+bool audio_load_live(AudioEngine *ae, KaEncodecKind kind, const char *path, int input_fd)
+{
+    if (ae == NULL || path == NULL || path[0] == '\0'
+        || (kind != KA_ENCODEC_STDIN && kind != KA_ENCODEC_SOCKET)
+        || (kind == KA_ENCODEC_STDIN && (input_fd < 0 || ae->stdin_used))) { return false; }
+    audio_stop(ae); close_file(ae); clear_midi(ae);
+    free(ae->current_file); ae->current_file = ka_strdup(path);
+    ae->is_encodec = true; ae->encodec_failed = false;
+    ae->encodec_kind = kind; ae->encodec_input = input_fd;
+    ae->fed_frames = 0;
+    if (kind == KA_ENCODEC_STDIN) { ae->stdin_used = true; }
+    memset(&ae->info, 0, sizeof(ae->info));
+    memset(&ae->encodec_info, 0, sizeof(ae->encodec_info));
+    ae->encodec_info.live = true;
+    ae->error[0] = '\0'; ae->error_code = 0u;
+    start_encodec(ae);
+    return !ae->encodec_failed;
+}
+
 /* Read FEED_CHUNK_FRAMES from the file, run the processing chain, convert
  * to stereo, and queue on the device. Returns frames queued (0 on EOF). */
 static int feed_chunk(AudioEngine *ae)
@@ -511,6 +550,7 @@ static int feed_chunk(AudioEngine *ae)
         if (frames == -2 || (frames > 0 && position != (uint64_t)ae->fed_frames)) {
             const char *error = frames == -2 ? ka_encodec_error(ae->encodec) : "Discontinuous EnCodec worker output";
             ae->encodec_failed = true;
+            ae->error_code = frames == -2 ? ka_encodec_error_code(ae->encodec) : 5u;
             audio_stop(ae);
             emit_error(ae, error);
             free(in); free(out); return 0;
@@ -634,6 +674,7 @@ void audio_play(AudioEngine *ae)
     if (ae->is_encodec) {
         if (ae->encodec_failed) return;
         if (ae->encodec_want_play) return;
+        if (!ae->encodec && ae->encodec_kind == KA_ENCODEC_STDIN) return;
         if (!ae->encodec) start_encodec(ae);
         if (!ae->encodec) return;
         ae->encodec_want_play = true;
@@ -693,6 +734,9 @@ void audio_pause(AudioEngine *ae)
 
 void audio_stop(AudioEngine *ae)
 {
+    if (ae->encodec) { ae->encodec_info = ka_encodec_info(ae->encodec); }
+    bool live = ae->is_encodec && ae->encodec_kind != KA_ENCODEC_FILE;
+    int64_t elapsed = live ? ae->fed_frames - queued_frames(ae) : 0;
     ka_encodec_close(ae->encodec); ae->encodec = NULL;
     ae->encodec_ready = ae->encodec_want_play = ae->encodec_seeking = false;
     if (ae->dev) {
@@ -703,13 +747,14 @@ void audio_stop(AudioEngine *ae)
         sf_seek(ae->sf, 0, SEEK_SET);
     if (ae->is_midi)
         ae->midi_pos = 0;
-    ae->fed_frames = 0;
+    ae->fed_frames = elapsed > 0 ? elapsed : 0;
     ae->file_exhausted = false;
     emit_state(ae, "stopped");
 }
 
 void audio_seek(AudioEngine *ae, int position_ms)
 {
+    if (ae->is_encodec && ae->encodec_kind != KA_ENCODEC_FILE) return;
     if (!has_loaded_audio(ae) || ae->info.samplerate <= 0)
         return;
     sf_count_t frame = (sf_count_t)((int64_t)position_ms *
@@ -773,7 +818,8 @@ void audio_set_eq_enabled(AudioEngine *ae, bool enabled)
 
 int audio_get_position_ms(AudioEngine *ae)
 {
-    if (!has_loaded_audio(ae) || ae->info.samplerate <= 0)
+    if ((!has_loaded_audio(ae) && !(ae->is_encodec && ae->encodec_kind != KA_ENCODEC_FILE))
+        || ae->info.samplerate <= 0)
         return 0;
     if (ae->is_encodec && ae->encodec_seeking) return ae->encodec_seek_from_ms;
     int64_t playing = ae->fed_frames - queued_frames(ae);
@@ -841,9 +887,11 @@ void audio_poll(AudioEngine *ae)
     if (ae->is_encodec && ae->encodec) {
         ka_encodec_poll(ae->encodec);
         KaEncodecInfo info = ka_encodec_info(ae->encodec);
+        ae->encodec_info = info;
         if (info.failed) {
             const char *error = ka_encodec_error(ae->encodec);
             ae->encodec_failed = true;
+            ae->error_code = ka_encodec_error_code(ae->encodec);
             audio_stop(ae);
             emit_error(ae, error);
             return;
@@ -925,18 +973,35 @@ AudioSourceInfo audio_source_info(const AudioEngine *ae)
     AudioSourceInfo result = {0};
     if (ae == NULL) return result;
     result.encodec = ae->is_encodec;
+    result.source_kind = ae->is_encodec ? ae->encodec_kind : KA_ENCODEC_FILE;
+    result.live = ae->is_encodec && ae->encodec_kind != KA_ENCODEC_FILE;
     result.ready = has_loaded_audio(ae);
     result.buffering = strcmp(ae->state, "loading") == 0 || strcmp(ae->state, "buffering") == 0;
-    result.seekable = result.ready;
+    result.seekable = result.ready && !result.live;
     result.sample_rate = ae->info.samplerate > 0 ? (unsigned int)ae->info.samplerate : 0u;
     result.channels = ae->info.channels > 0 ? (unsigned int)ae->info.channels : 0u;
     result.samples = ae->info.frames > 0 ? (uint64_t)ae->info.frames : 0u;
-    if (ae->encodec) {
-        KaEncodecInfo info = ka_encodec_info(ae->encodec);
+    if (ae->is_encodec) {
+        KaEncodecInfo info = ae->encodec ? ka_encodec_info(ae->encodec) : ae->encodec_info;
+        result.sample_rate = info.sample_rate;
+        result.channels = info.channels;
+        result.samples = info.samples;
         result.profile = info.profile;
         result.bitrate = info.codebooks * (info.profile == 1u ? 750u : 1500u);
+        result.ended = info.ended;
+        result.degraded = info.degraded;
+        result.wire_valid = info.wire_valid;
+        result.wire_pts_ms = info.wire_pts_ms; result.wire_epoch = info.wire_epoch;
+        result.reconnect_required = result.live && ae->error_code != 0u;
     }
+    result.error_code = ae->error_code;
+    result.threads = ae->is_encodec ? ae->encodec_threads : 0u;
     return result;
+}
+
+const char *audio_error(const AudioEngine *ae)
+{
+    return ae == NULL ? "" : ae->error;
 }
 
 void audio_cleanup(AudioEngine *ae)

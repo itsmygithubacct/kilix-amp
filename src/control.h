@@ -13,9 +13,10 @@
 #include "common.h"
 #include "json.h"
 
-/* Bumping this is a breaking change to a published contract: kilix-music
- * declares the version it speaks and refuses to interpret another one. */
+/* Missing versions retain the published v1 contract. V2 is explicitly
+ * requested per command; clients negotiate with a read-only ping. */
 #define CONTROL_PROTOCOL 1
+#define CONTROL_PROTOCOL_MAX 2
 
 #define CONTROL_MAX_CLIENTS 8
 /* A request is a short command object; anything longer is a client fault. */

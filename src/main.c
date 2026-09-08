@@ -18,6 +18,7 @@
 #include "consts.h"
 #include "dock.h"
 #include "encodec_source.h"
+#include <unistd.h>
 #include "filedialog.h"
 #include "headless.h"
 #include "playlist.h"
@@ -90,6 +91,12 @@ static void show_playlist(App *app)
 
 static void render_visible_windows(App *app)
 {
+    AudioSourceInfo info = audio_source_info(app->audio);
+    main_window_set_live_state(&app->main_win, info.live, info.degraded,
+        info.ended && strcmp(audio_state(app->audio), "stopped") == 0,
+        info.reconnect_required);
+    if (info.live)
+        main_window_set_position(&app->main_win, audio_get_position_ms(app->audio), 0);
     if (app->main_win.kw.visible)
         main_window_render(&app->main_win);
     if (app->eq_win.kw.visible)
@@ -130,7 +137,8 @@ static void play_pending(App *app)
     Track *track = playlist_set_current(app->playlist, app->pending_play_index);
     if (!track)
         return;
-    audio_load(app->audio, track->filepath);
+    if (track->source_kind == KA_ENCODEC_FILE) audio_load(app->audio, track->filepath);
+    else if (!audio_load_live(app->audio, track->source_kind, track->filepath, STDIN_FILENO)) return;
     audio_play(app->audio);
     char *disp = track_display_title(track);
     main_window_set_title(&app->main_win, disp);
@@ -240,6 +248,7 @@ static void on_toggle_repeat(void *ud, bool v)
 static void on_eos(void *ud)
 {
     App *app = ud;
+    if (audio_source_info(app->audio).live) return;
     Track *track = playlist_next_track(app->playlist);
     if (track)
         queue_track(app, track);
@@ -254,6 +263,7 @@ static void on_error(void *ud, const char *msg)
     snprintf(buf, sizeof(buf), "ERROR: %s", msg);
     main_window_set_title(&app->main_win, buf);
     main_window_set_play_state(&app->main_win, "stopped");
+    if (audio_source_info(app->audio).live) return;
     /* Stop auto-skipping once we've failed on every track. */
     if (app->auto_skip_count >= playlist_count(app->playlist)) {
         app->auto_skip_count = 0;
@@ -756,6 +766,8 @@ int main(int argc, char **argv)
     const char *socket_arg = "";
     const char *files[1024];
     int n_files = 0;
+    KaEncodecKind live_kind = KA_ENCODEC_FILE;
+    const char *live_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -766,7 +778,9 @@ int main(int argc, char **argv)
                    "  --headless     no windows; serve the control socket\n"
                    "  --socket PATH  control socket path (implies --headless)\n"
                    "                 default: $KILIX_AMP_SOCKET, else\n"
-                   "                 $XDG_RUNTIME_DIR/kilix-amp.sock\n",
+                   "                 $XDG_RUNTIME_DIR/kilix-amp.sock\n"
+                   "  --encodec-stdin        framed live mono stream from stdin\n"
+                   "  --encodec-socket PATH  framed live mono stream from a private Unix socket\n",
                    (double)SCALE_MIN, (double)SCALE_MAX);
             return 0;
         } else if (strcmp(argv[i], "--skin") == 0 && i + 1 < argc) {
@@ -782,15 +796,29 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             socket_arg = argv[++i];
             headless = true;
+        } else if (strcmp(argv[i], "--encodec-stdin") == 0) {
+            if (live_kind != KA_ENCODEC_FILE) { fprintf(stderr, "Only one live source is allowed\n"); return 2; }
+            live_kind = KA_ENCODEC_STDIN; live_path = "stdin";
+        } else if (strcmp(argv[i], "--encodec-socket") == 0) {
+            if (live_kind != KA_ENCODEC_FILE || i + 1 == argc) {
+                fprintf(stderr, "One --encodec-socket PATH is required\n"); return 2;
+            }
+            live_kind = KA_ENCODEC_SOCKET; live_path = argv[++i];
         } else if (n_files < (int)KA_LEN(files)) {
             files[n_files++] = argv[i];
         }
+    }
+    if (live_kind != KA_ENCODEC_FILE && n_files != 0) {
+        fprintf(stderr, "A live source must be opened without a file playlist\n"); return 2;
+    }
+    if (live_kind == KA_ENCODEC_SOCKET && (live_path[0] != '/' || strlen(live_path) >= 108u)) {
+        fprintf(stderr, "A live Unix source needs a bounded absolute socket path\n"); return 2;
     }
 
     /* Before any video or skin work: headless must run where no display
      * exists at all. */
     if (headless)
-        return headless_run(files, n_files, socket_arg);
+        return headless_run(files, n_files, socket_arg, live_kind, live_path);
 
     srand((unsigned)time(NULL));
 
@@ -990,7 +1018,8 @@ int main(int argc, char **argv)
         else if (ka_is_file(files[i]))
             playlist_add_file(app->playlist, files[i]);
     }
-    if (n_files > 0 && playlist_count(app->playlist) > 0) {
+    if (live_kind != KA_ENCODEC_FILE) playlist_add_live(app->playlist, live_path, live_kind);
+    if ((n_files > 0 || live_kind != KA_ENCODEC_FILE) && playlist_count(app->playlist) > 0) {
         show_playlist(app);
         if (playlist_current_index(app->playlist) < 0)
             playlist_set_current(app->playlist, 0);

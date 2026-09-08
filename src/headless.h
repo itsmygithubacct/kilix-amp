@@ -8,11 +8,12 @@
 #define KA_HEADLESS_H
 
 #include "common.h"
+#include "encodec_source.h"
 
 /* Runs until a `quit` command, SIGINT/SIGTERM, or KILIXAMP_EXIT_AFTER_MS.
  * `socket_path` may be NULL for control_default_socket_path().
  * Returns a process exit status. */
 int headless_run(const char *const *files, int n_files,
-                 const char *socket_path);
+                 const char *socket_path, KaEncodecKind live_kind, const char *live_path);
 
 #endif

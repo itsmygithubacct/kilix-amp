@@ -57,6 +57,8 @@ const char *track_filename(const Track *t)
 
 char *track_duration_str(const Track *t)
 {
+    if (t->source_kind != KA_ENCODEC_FILE)
+        return ka_strdup("LIVE");
     if (t->duration < 0)
         return ka_strdup("");
     return ka_asprintf("%d:%02d", t->duration / 60, t->duration % 60);
@@ -220,6 +222,9 @@ int playlist_total_duration(const Playlist *pl)
 
 char *playlist_total_duration_str(const Playlist *pl)
 {
+    for (int i = 0; i < pl->count; ++i)
+        if (pl->tracks[i].source_kind != KA_ENCODEC_FILE)
+            return ka_strdup("LIVE");
     int total = playlist_total_duration(pl);
     int h = total / 3600, m = (total % 3600) / 60, s = total % 60;
     if (h > 0)
@@ -247,6 +252,16 @@ void playlist_add_file(Playlist *pl, const char *filepath)
     push_track(pl, track_make(filepath, NULL, -1));
     if (pl->shuffle)
         generate_shuffle_order(pl);
+    emit_changed(pl);
+}
+
+void playlist_add_live(Playlist *pl, const char *path, KaEncodecKind kind)
+{
+    if (path == NULL || path[0] == '\0' || (kind != KA_ENCODEC_STDIN && kind != KA_ENCODEC_SOCKET)) return;
+    Track track = track_make(path, kind == KA_ENCODEC_STDIN ? "EnCodec live stdin" : "EnCodec live socket", -1);
+    track.source_kind = kind;
+    push_track(pl, track);
+    if (pl->shuffle) generate_shuffle_order(pl);
     emit_changed(pl);
 }
 
@@ -615,6 +630,7 @@ void playlist_save_m3u(Playlist *pl, const char *filepath)
     fputs("#EXTM3U\n", f);
     for (int i = 0; i < pl->count; i++) {
         Track *t = &pl->tracks[i];
+        if (t->source_kind != KA_ENCODEC_FILE) continue; /* Ephemeral streams are not portable playlist files. */
         char *disp = track_display_title(t);
         fprintf(f, "#EXTINF:%d,%s\n%s\n", t->duration, disp, t->filepath);
         free(disp);
@@ -727,13 +743,16 @@ void playlist_save_pls(Playlist *pl, const char *filepath)
     if (!f)
         return;
     fputs("[playlist]\n", f);
+    int entries = 0;
     for (int i = 0; i < pl->count; i++) {
         Track *t = &pl->tracks[i];
+        if (t->source_kind != KA_ENCODEC_FILE) continue;
+        ++entries;
         char *disp = track_display_title(t);
         fprintf(f, "File%d=%s\nTitle%d=%s\nLength%d=%d\n",
-                i + 1, t->filepath, i + 1, disp, i + 1, t->duration);
+                entries, t->filepath, entries, disp, entries, t->duration);
         free(disp);
     }
-    fprintf(f, "NumberOfEntries=%d\nVersion=2\n", pl->count);
+    fprintf(f, "NumberOfEntries=%d\nVersion=2\n", entries);
     fclose(f);
 }

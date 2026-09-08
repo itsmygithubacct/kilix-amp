@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <math.h>
 
 /* --- Writer --- */
 
@@ -213,6 +215,12 @@ void json_kv_bool(JsonBuf *j, const char *key, bool value)
     jb_puts(j, value ? "true" : "false");
 }
 
+void json_kv_null(JsonBuf *j, const char *key)
+{
+    jb_key(j, key);
+    jb_puts(j, "null");
+}
+
 void json_arr_str(JsonBuf *j, const char *value)
 {
     jb_sep(j);
@@ -345,6 +353,143 @@ static int hex4(const char *p, unsigned *out)
     return 1;
 }
 
+typedef struct { const char *at, *end; } RequestParser;
+
+static void request_ws(RequestParser *parser)
+{
+    while (parser->at < parser->end && strchr(" \t\r\n", *parser->at) != NULL) ++parser->at;
+}
+
+static bool request_string(RequestParser *parser, bool key)
+{
+    if (parser->at == parser->end || *parser->at++ != '"') return false;
+    while (parser->at < parser->end) {
+        unsigned char byte = (unsigned char)*parser->at++;
+        if (byte == '"') return true;
+        if (byte < 0x20u || (key && (byte == '\\' || byte >= 0x7fu))) return false;
+        if (byte == '\\') {
+            if (parser->at == parser->end) return false;
+            char escape = *parser->at++;
+            if (escape == 'u') {
+                unsigned value;
+                if (parser->end - parser->at < 4 || !hex4(parser->at, &value) || value == 0u) return false;
+                parser->at += 4;
+                if (value >= 0xd800u && value <= 0xdbffu) {
+                    unsigned low;
+                    if (parser->end - parser->at < 6 || parser->at[0] != '\\' || parser->at[1] != 'u'
+                        || !hex4(parser->at + 2, &low) || low < 0xdc00u || low > 0xdfffu) return false;
+                    parser->at += 6;
+                } else if (value >= 0xdc00u && value <= 0xdfffu) return false;
+            } else if (strchr("\"\\/bfnrt", escape) == NULL) return false;
+        } else if (byte >= 0x80u) {
+            --parser->at;
+            int length = utf8_len((const unsigned char *)parser->at, (size_t)(parser->end - parser->at));
+            if (length == 0) return false;
+            parser->at += length;
+        }
+    }
+    return false;
+}
+
+static bool request_value(RequestParser *parser, unsigned int depth)
+{
+    request_ws(parser);
+    if (parser->at == parser->end || depth > 16u) return false;
+    char kind = *parser->at;
+    if (kind == '"') return request_string(parser, false);
+    if (kind == '{' || kind == '[') {
+        ++parser->at;
+        const char *keys[64]; size_t sizes[64], count = 0u;
+        char end = kind == '{' ? '}' : ']';
+        request_ws(parser);
+        if (parser->at < parser->end && *parser->at == end) { ++parser->at; return true; }
+        for (;;) {
+            request_ws(parser);
+            if (kind == '{') {
+                const char *key = parser->at;
+                if (count == 64u || !request_string(parser, true)) return false;
+                size_t size = (size_t)(parser->at - key);
+                if (size < 3u || size > 65u) return false;
+                for (size_t i = 0u; i < count; ++i)
+                    if (sizes[i] == size && !memcmp(keys[i], key, size)) return false;
+                keys[count] = key; sizes[count++] = size;
+                request_ws(parser);
+                if (parser->at == parser->end || *parser->at++ != ':') return false;
+            }
+            if (!request_value(parser, depth + 1u)) return false;
+            request_ws(parser);
+            if (parser->at == parser->end) return false;
+            char next = *parser->at++;
+            if (next == end) return true;
+            if (next != ',') return false;
+        }
+    }
+    const char *constants[] = {"true", "false", "null"};
+    for (size_t i = 0u; i < 3u; ++i) {
+        size_t length = strlen(constants[i]);
+        if ((size_t)(parser->end - parser->at) >= length && !memcmp(parser->at, constants[i], length)) {
+            parser->at += length; return true;
+        }
+    }
+    const char *start = parser->at;
+    if (*parser->at == '-') ++parser->at;
+    if (parser->at == parser->end) return false;
+    if (*parser->at == '0') ++parser->at;
+    else {
+        if (*parser->at < '1' || *parser->at > '9') return false;
+        do { ++parser->at; } while (parser->at < parser->end && *parser->at >= '0' && *parser->at <= '9');
+    }
+    if (parser->at < parser->end && *parser->at == '.') {
+        ++parser->at;
+        const char *fraction = parser->at;
+        while (parser->at < parser->end && *parser->at >= '0' && *parser->at <= '9') ++parser->at;
+        if (parser->at == fraction) return false;
+    }
+    if (parser->at < parser->end && (*parser->at == 'e' || *parser->at == 'E')) {
+        ++parser->at;
+        if (parser->at < parser->end && (*parser->at == '+' || *parser->at == '-')) ++parser->at;
+        const char *exponent = parser->at;
+        while (parser->at < parser->end && *parser->at >= '0' && *parser->at <= '9') ++parser->at;
+        if (parser->at == exponent) return false;
+    }
+    char *number_end;
+    double number = strtod(start, &number_end);
+    return number_end == parser->at && isfinite(number);
+}
+
+bool json_validate_request(const char *json)
+{
+    if (json == NULL) return false;
+    size_t length = strnlen(json, 8193u);
+    if (length > 8192u) return false;
+    RequestParser parser = {json, json + length};
+    request_ws(&parser);
+    if (parser.at == parser.end || *parser.at != '{' || !request_value(&parser, 0u)) return false;
+    request_ws(&parser);
+    return parser.at == parser.end;
+}
+
+bool json_has_key(const char *json, const char *key)
+{
+    return find_value(json, key) != NULL;
+}
+
+bool json_get_str_exact(const char *json, const char *key, char *out, size_t n)
+{
+    if (json == NULL || out == NULL || !json_validate_request(json)) return false;
+    size_t length = strlen(json) + 1u;
+    char *copy = malloc(length);
+    if (copy == NULL) return false;
+    bool valid = json_get_str(json, key, copy, length);
+    if (valid) {
+        length = strlen(copy) + 1u;
+        if (length > n) valid = false;
+        else memcpy(out, copy, length);
+    }
+    free(copy);
+    return valid;
+}
+
 static size_t put_utf8(char *out, size_t n, size_t at, unsigned long cp)
 {
     unsigned char seq[4];
@@ -438,7 +583,7 @@ bool json_get_num(const char *json, const char *key, double *out)
         return false;
     char *end = NULL;
     double v = strtod(p, &end);
-    if (!end || end == p)
+    if (!end || end == p || !isfinite(v) || (*end && strchr(",}] \t\r\n", *end) == NULL))
         return false;
     *out = v;
     return true;
@@ -446,12 +591,13 @@ bool json_get_num(const char *json, const char *key, double *out)
 
 bool json_get_int(const char *json, const char *key, long long *out)
 {
-    double v;
-    if (!json_get_num(json, key, &v))
-        return false;
-    if (v > 9.0e18 || v < -9.0e18)
-        return false;
-    *out = (long long)v;
+    const char *p = find_value(json, key);
+    if (!p || (*p != '-' && (*p < '0' || *p > '9'))) return false;
+    char *end;
+    errno = 0;
+    long long value = strtoll(p, &end, 10);
+    if (errno == ERANGE || end == p || (*end && strchr(",}] \t\r\n", *end) == NULL)) return false;
+    *out = value;
     return true;
 }
 

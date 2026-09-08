@@ -235,10 +235,20 @@ static void serve_line(ControlClient *c, char *line, ControlHandler handler,
     json_obj_begin(&reply);
     /* Written before anything else and unconditionally: a client that speaks
      * another version must be able to detect that from any reply at all. */
-    json_kv_int(&reply, "protocol", CONTROL_PROTOCOL);
+    bool valid = json_validate_request(line);
+    long long protocol = CONTROL_PROTOCOL;
+    bool supported = valid && (!json_has_key(line, "protocol")
+        || (json_get_int(line, "protocol", &protocol)
+            && protocol >= CONTROL_PROTOCOL && protocol <= CONTROL_PROTOCOL_MAX));
+    json_kv_int(&reply, "protocol", supported ? protocol : CONTROL_PROTOCOL);
 
     char cmd[64];
-    if (!json_get_str(line, "cmd", cmd, sizeof(cmd)))
+    if (!valid)
+        reply_error(&reply, "malformed request");
+    else if (!supported) {
+        reply_error(&reply, "unsupported protocol; supported versions are 1 and 2");
+        json_kv_int(&reply, "max_protocol", CONTROL_PROTOCOL_MAX);
+    } else if (!json_get_str_exact(line, "cmd", cmd, sizeof(cmd)))
         reply_error(&reply, "request needs a \"cmd\" string");
     else if (!cmd[0])
         reply_error(&reply, "empty command");
@@ -296,6 +306,7 @@ static void client_consume(ControlClient *c, ControlHandler handler, void *ud)
                 abort();
             memcpy(line, c->in, line_len);
             line[line_len] = '\0';
+            if (memchr(line, '\0', line_len) != NULL) line[0] = '\0';
             /* Tolerate CRLF from a line-oriented peer. */
             if (line_len && line[line_len - 1] == '\r')
                 line[line_len - 1] = '\0';

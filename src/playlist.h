@@ -4,6 +4,7 @@
 #define KA_PLAYLIST_H
 
 #include "common.h"
+#include "encodec_source.h"
 
 enum {
     REPEAT_OFF = 0,
@@ -20,6 +21,7 @@ typedef struct {
     int bitrate;    /* kbps */
     int sample_rate;
     int channels;
+    KaEncodecKind source_kind;
 } Track;
 
 /* "Artist - Title" or just "Title"; heap string, caller frees. */
@@ -58,6 +60,7 @@ int playlist_total_duration(const Playlist *pl); /* seconds, known tracks only *
 char *playlist_total_duration_str(const Playlist *pl);
 
 void playlist_add_file(Playlist *pl, const char *filepath);
+void playlist_add_live(Playlist *pl, const char *path, KaEncodecKind kind);
 void playlist_add_files(Playlist *pl, const char **files, int n);
 void playlist_add_directory(Playlist *pl, const char *dirpath, bool recursive);
 void playlist_remove(Playlist *pl, const int *indices, int n);

@@ -47,6 +47,8 @@ typedef struct {
     int bitrate, sample_rate, channels;
     bool eq_visible, pl_visible;
     bool seeking;
+    bool live;
+    char live_status[40];
 
     SkinButton btn_prev, btn_play, btn_pause, btn_stop, btn_next, btn_eject;
     SkinSlider volume_slider, balance_slider, pos_slider;
@@ -62,6 +64,8 @@ void main_window_scroll_tick(MainWindow *mw);
 
 void main_window_set_title(MainWindow *mw, const char *text);
 void main_window_set_play_state(MainWindow *mw, const char *state);
+void main_window_set_live_state(MainWindow *mw, bool live, bool degraded,
+                                bool ended, bool reconnect);
 void main_window_set_position(MainWindow *mw, int pos_ms, int dur_ms);
 void main_window_set_track_info(MainWindow *mw, int bitrate, int sample_rate,
                                 int channels);

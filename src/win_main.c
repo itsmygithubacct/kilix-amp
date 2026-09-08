@@ -162,6 +162,16 @@ void main_window_set_play_state(MainWindow *mw, const char *state)
     snprintf(mw->play_state, sizeof(mw->play_state), "%s", state);
 }
 
+void main_window_set_live_state(MainWindow *mw, bool live, bool degraded,
+                                bool ended, bool reconnect)
+{
+    mw->live = live;
+    snprintf(mw->live_status, sizeof(mw->live_status), "%s",
+        reconnect ? "LIVE reconnect required" : ended ? "LIVE ended"
+        : degraded ? "LIVE recovering" : live ? "LIVE" : "");
+    if (live) mw->lcd.show_remaining = false;
+}
+
 void main_window_set_position(MainWindow *mw, int pos_ms, int dur_ms)
 {
     mw->position_sec = pos_ms / 1000;
@@ -285,7 +295,7 @@ void main_window_render(MainWindow *mw)
 
     /* Position bar */
     SDL_Surface *posbar_bmp = skin_bitmap(mw->skin, "posbar");
-    if (posbar_bmp) {
+    if (posbar_bmp && !mw->live) {
         ksurf_blit(buf, POS_BAR.x, POS_BAR.y, posbar_bmp, POS_BAR_BG_SRC);
         KRect tr = skin_slider_thumb_rect(&mw->pos_slider);
         ksurf_blit(buf, tr.x, tr.y, posbar_bmp,
@@ -302,7 +312,11 @@ void main_window_render(MainWindow *mw)
     /* Scrolling title text */
     char status_title[640];
     const char *title = mw->title_text;
-    if (strcmp(mw->play_state, "loading") == 0 || strcmp(mw->play_state, "buffering") == 0) {
+    if (mw->live) {
+        snprintf(status_title, sizeof(status_title), "%s / %s: %s",
+                 mw->live_status, mw->play_state, mw->title_text);
+        title = status_title;
+    } else if (strcmp(mw->play_state, "loading") == 0 || strcmp(mw->play_state, "buffering") == 0) {
         snprintf(status_title, sizeof(status_title), "%s: %s", mw->play_state, mw->title_text);
         title = status_title;
     }
@@ -422,7 +436,7 @@ void main_window_mouse_press(MainWindow *mw, int x, int y, int button)
 
     /* Clickable display areas */
     if (krect_contains(TIME_DISPLAY, lx, ly)) {
-        lcd_toggle_mode(&mw->lcd);
+        if (!mw->live) lcd_toggle_mode(&mw->lcd);
         return;
     }
     if (krect_contains(VIS_AREA, lx, ly)) {
@@ -431,6 +445,7 @@ void main_window_mouse_press(MainWindow *mw, int x, int y, int button)
     }
 
     /* Interactive widgets */
+    if (mw->live && krect_contains(POS_BAR, lx, ly)) return;
     HitKind hit = hitmap_mouse_press(&mw->hitmap, lx, ly, NULL);
     if (hit != HIT_NONE) {
         if (hit == HIT_SLIDER && mw->hitmap.captured == &mw->pos_slider)

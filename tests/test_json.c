@@ -190,6 +190,43 @@ static void test_read_malformed(void)
     ASSERT_EQ_INT(n, 7);
 }
 
+static void test_request_validation(void)
+{
+    const char *bad[] = {
+        "{\"cmd\":\"play\"}trailing", "{\"cmd\":\"play\",}",
+        "{\"cmd\":\"play\",\"cmd\":\"quit\"}", "{\"protoc\\u006fl\":2,\"cmd\":\"quit\"}",
+        "{\"pos\":NaN}", "{\"pos\":Infinity}", "{\"pos\":1e309}", "{\"pos\":01}",
+        "{\"pos\":+1}", "{\"pos\":1.}", "{\"pos\":1e}", "{\"on\":truejunk}",
+        "{\"x\":[1,]}", "{\"x\":[1}}", "{\"x\":{\"a\":1,\"a\":2}}",
+        "{\"path\":\"a\\u0000b\"}", "{\"path\":\"\\ud800\"}", "{\"path\":\"\\udc00\"}",
+        "{\"path\":\"\\u12\"}", "{\"path\":\"bad\nline\"}", "{\"path\":\"\xff\"}",
+        "{\"path\":\"\xc0\x80\"}", "[]", "null", "{\"x\":--1}"
+    };
+    for (size_t i = 0u; i < KA_LEN(bad); ++i) ASSERT_FALSE(json_validate_request(bad[i]));
+    const char *good[] = {"{}", "{\"cmd\":\"play\",\"protocol\":2}",
+        " {\"x\":[1,true,null,{\"ok\":false}],\"pos\":-0.3e+2}\r\n",
+        "{\"path\":\"\\ud83c\\udfb5\"}", "{\"path\":\"caf\xc3\xa9\"}"};
+    for (size_t i = 0u; i < KA_LEN(good); ++i) ASSERT_TRUE(json_validate_request(good[i]));
+    char small[5] = "keep";
+    ASSERT_FALSE(json_get_str_exact("{\"path\":\"12345\"}", "path", small, sizeof(small)));
+    ASSERT_STR_EQ(small, "keep");
+    ASSERT_TRUE(json_get_str_exact("{\"path\":\"1234\"}", "path", small, sizeof(small)));
+    ASSERT_STR_EQ(small, "1234");
+    long long integer = 42;
+    const char *numbers[] = {"{\"x\":NaN}", "{\"x\":1.5}", "{\"x\":2e0}", "{\"x\":9223372036854775808}"};
+    for (size_t i = 0u; i < KA_LEN(numbers); ++i) {
+        ASSERT_FALSE(json_get_int(numbers[i], "x", &integer)); ASSERT_EQ_INT(integer, 42);
+    }
+    ASSERT_TRUE(json_get_int("{\"x\":9223372036854775807}", "x", &integer));
+    ASSERT_TRUE(integer == INT64_MAX);
+    char deep[512] = "{\"x\":";
+    for (unsigned int i = 0u; i < 17u; ++i) strcat(deep, "[");
+    strcat(deep, "0");
+    for (unsigned int i = 0u; i < 17u; ++i) strcat(deep, "]");
+    strcat(deep, "}");
+    ASSERT_FALSE(json_validate_request(deep));
+}
+
 int main(void)
 {
     RUN(test_writer_shapes);
@@ -204,5 +241,6 @@ int main(void)
     RUN(test_read_escapes);
     RUN(test_read_truncates_safely);
     RUN(test_read_malformed);
+    RUN(test_request_validation);
     return kt_summary("json");
 }

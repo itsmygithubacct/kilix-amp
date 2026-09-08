@@ -51,6 +51,9 @@ $(OBJDIR)/test_%: $(TESTDIR)/test_%.c $(LIBOBJS)
 $(OBJDIR)/native_encodec: $(TESTDIR)/native_encodec.c $(LIBOBJS)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $< $(LIBOBJS) $(LDLIBS)
 
+$(OBJDIR)/native_live: $(TESTDIR)/native_live.c $(LIBOBJS)
+	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $< $(LIBOBJS) $(LDLIBS)
+
 test: $(TESTBINS)
 	@fail=0; for t in $(TESTBINS); do \
 		echo "== $$t"; $$t || fail=1; \

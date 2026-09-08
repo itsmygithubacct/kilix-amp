@@ -15,6 +15,7 @@ typedef struct {
     uint32_t magic, version, kind, bytes;
     uint64_t generation, position, samples;
     uint32_t rate, channels, profile, codebooks, result, reserved;
+    uint64_t wire_pts_ms, wire_epoch;
 } TestHeader;
 
 static void transmit(TestHeader *header, const void *payload, bool with_fd)
@@ -40,11 +41,15 @@ static int fixture_peer(void)
     struct pollfd channel = {3, POLLIN, 0};
     if (poll(&channel, 1u, 5000) <= 0) return 2;
     ssize_t length = recv(3, packet, sizeof(packet), 0);
-    if (length < 65) return 2;
+    if (length < (ssize_t)sizeof(TestHeader) + 1) return 2;
     const char *mode = (const char *)packet + sizeof(TestHeader);
-    TestHeader response = {.magic = 0x4b414543, .version = 1u, .kind = 10u,
+    TestHeader response = {.magic = 0x4b414543, .version = 2u, .kind = 10u,
         .generation = 1u, .samples = 50003u, .rate = 24000u, .channels = 1u, .profile = 1u, .codebooks = 4u};
     float pcm[4097] = {0};
+    bool live = !strncmp(mode, "live-", 5u);
+    if (live) { response.samples = 0u; response.reserved = 1u; }
+    if (!strcmp(mode, "live-duration")) response.samples = 1u;
+    if (!strcmp(mode, "live-profile")) { response.profile = 2u; response.rate = 48000u; response.channels = 2u; }
     if (!strcmp(mode, "magic")) response.magic++;
     if (!strcmp(mode, "version")) response.version++;
     if (!strcmp(mode, "future")) response.generation++;
@@ -69,6 +74,20 @@ static int fixture_peer(void)
         transmit(&response, NULL, false);
     } else {
         response.kind = 11u; response.bytes = 960u * sizeof(float);
+        if (live) {
+            response.reserved = 5u; response.wire_epoch = 1u; response.wire_pts_ms = 1000u;
+            if (!strcmp(mode, "live-wire")) { response.reserved = 1u; response.wire_epoch = response.wire_pts_ms = 0u; }
+            if (!strcmp(mode, "live-size")) response.bytes = 959u * sizeof(float);
+            if (!strcmp(mode, "live-state")) { response.kind = 14u; response.reserved = 7u; response.bytes = 0u; }
+            if (!strcmp(mode, "live-end")) { response.kind = 12u; response.bytes = 0u; }
+            if (!strcmp(mode, "live-nonfinite")) pcm[0] = NAN;
+            if (!strcmp(mode, "live-pts") || !strcmp(mode, "live-epoch")) {
+                transmit(&response, pcm, false);
+                response.position = 960u;
+                if (!strcmp(mode, "live-pts")) response.wire_pts_ms += 80u;
+                else response.wire_epoch = 0u;
+            }
+        }
         if (!strcmp(mode, "nonfinite")) pcm[0] = NAN;
         if (!strcmp(mode, "discontinuous")) response.position = 1u;
         if (!strcmp(mode, "odd-pcm")) response.bytes--;
@@ -131,6 +150,27 @@ static void test_private_descriptors(void)
     ASSERT_EQ_INT(position, 0u);
     ka_encodec_close(source); close(sentinel); SDL_Delay(2u); ka_encodec_reap();
 }
+
+static void test_live_metadata_refusals(void)
+{
+    const char *modes[] = {"live-duration", "live-profile", "live-wire", "live-size",
+        "live-state", "live-end", "live-nonfinite", "live-pts", "live-epoch"};
+    for (size_t i = 0u; i < sizeof(modes) / sizeof(modes[0]); ++i) {
+        KaEncodec *source = ka_encodec_open_source(KA_ENCODEC_SOCKET, modes[i], -1, "", "", 2u);
+        ASSERT_TRUE(source != NULL);
+        uint32_t start = SDL_GetTicks(); float pcm[960]; uint64_t position = 0u;
+        while (SDL_GetTicks() - start < 5000u && !ka_encodec_info(source).failed) {
+            (void)ka_encodec_read(source, pcm, 960u, &position); SDL_Delay(1u);
+        }
+        KaEncodecInfo info = ka_encodec_info(source);
+        ASSERT_TRUE(info.failed && info.live);
+        ASSERT_EQ_INT(ka_encodec_error_code(source), 5u);
+        if (!strcmp(modes[i], "live-pts") || !strcmp(modes[i], "live-epoch")) {
+            ASSERT_TRUE(info.wire_valid && info.wire_epoch == 1u && info.wire_pts_ms == 1000u);
+        } else ASSERT_FALSE(info.wire_valid);
+        ka_encodec_close(source); SDL_Delay(2u); ka_encodec_reap();
+    }
+}
 #endif
 
 int main(int argc, char **argv)
@@ -139,6 +179,7 @@ int main(int argc, char **argv)
     if (argc == 2 && !strcmp(argv[1], "--encodec-worker")) return fixture_peer();
     RUN(test_refusals);
     RUN(test_private_descriptors);
+    RUN(test_live_metadata_refusals);
 #else
     (void)argc; (void)argv;
     KaEncodec *source = ka_encodec_open("missing.kenc", "", "", 1u);

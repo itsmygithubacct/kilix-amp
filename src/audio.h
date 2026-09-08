@@ -5,6 +5,7 @@
 #define KA_AUDIO_H
 
 #include "common.h"
+#include "encodec_source.h"
 
 #define AUDIO_SPECTRUM_BANDS 75
 
@@ -34,6 +35,11 @@ typedef struct {
     bool encodec, ready, buffering, seekable, live;
     unsigned int sample_rate, channels, bitrate, profile;
     uint64_t samples;
+    bool ended, degraded, wire_valid, reconnect_required;
+    uint64_t wire_pts_ms, wire_epoch;
+    unsigned int error_code;
+    unsigned int threads;
+    KaEncodecKind source_kind;
 } AudioSourceInfo;
 
 typedef struct AudioEngine AudioEngine;
@@ -42,6 +48,7 @@ AudioEngine *audio_new(void);
 void audio_set_callbacks(AudioEngine *ae, const AudioCallbacks *cbs);
 /* Prepare a file for playback (stops current playback first). */
 void audio_load(AudioEngine *ae, const char *filepath);
+bool audio_load_live(AudioEngine *ae, KaEncodecKind kind, const char *path, int input_fd);
 void audio_play(AudioEngine *ae);
 void audio_pause(AudioEngine *ae); /* toggles pause <-> resume */
 void audio_stop(AudioEngine *ae);
@@ -58,6 +65,7 @@ int audio_get_duration_ms(AudioEngine *ae);
 const char *audio_state(const AudioEngine *ae);
 const char *audio_current_file(const AudioEngine *ae); /* NULL if none */
 AudioSourceInfo audio_source_info(const AudioEngine *ae);
+const char *audio_error(const AudioEngine *ae);
 /* Drive decoding + event emission; call every main-loop tick. */
 void audio_poll(AudioEngine *ae);
 void audio_cleanup(AudioEngine *ae); /* also frees the engine */

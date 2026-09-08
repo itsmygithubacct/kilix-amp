@@ -56,7 +56,7 @@ and reports an unavailable-model error for these files.
 
 Set `KILIX_ENCODEC_24KHZ_DIR` and/or `KILIX_ENCODEC_48KHZ_DIR` to the verified
 asset directories supplied before launch. Only the directory for the selected
-file profile is used. `KILIX_ENCODEC_THREADS` accepts `1` (default) or `2`.
+file profile is used. `KILIX_ENCODEC_THREADS` accepts `1` or `2` (default).
 Amp never installs or downloads a model. Missing or incompatible assets produce
 an error, without claiming playback. The shared library verifies the exact
 graph population; regular input files are copied into sealed private snapshots.
@@ -66,7 +66,8 @@ existing preamp/EQ/volume/pan/device path. An owned same-executable worker loads
 models and decodes bounded records over a private socketpair; the UI performs
 only nonblocking IPC and owned-child reaping. Pause keeps bounded prefetch;
 stop or a source change kills only that worker. Workers inherit no application
-FDs beyond their private channel and stderr, and die if their parent exits.
+FDs beyond their private channel, stderr and an explicitly selected live input,
+and die if their parent exits.
 Each has a 2 GiB address-space ceiling, 512 MiB file-size ceiling and 64 FD
 ceiling. At most eight unreaped workers can exist during rapid source changes.
 
@@ -77,8 +78,19 @@ Old queued PCM is discarded and playback resumes after the worker acknowledges
 the actual boundary. Loading and queue starvation are displayed as `loading`
 and `buffering`. Stereo playback buffers at least 1.25 seconds before starting
 (or the entire remainder for a shorter file), with a two-second device-queue
-target. These local-file controls do not yet expose live sources or protocol-2
-source metadata; they do not assert hardware or listening qualification.
+target. The selected thread count is reported through protocol 2; functional
+playback does not by itself assert hardware or listening qualification.
+
+For a live 24 kHz mono stream, use `--encodec-stdin` or
+`--encodec-socket /absolute/private/source.sock`, without a file playlist.
+Both windowed and headless modes accept the same framed input described in
+[LIVE-FORMAT.md](LIVE-FORMAT.md). These are binary EnCodec inputs, not raw PCM,
+local `.kenc` files or arbitrary network streams. Live playback shows elapsed
+time and `LIVE`, has no finite duration or seek control, and reports recovery,
+end and reconnect state. Stdin is single-use for the lifetime of the player.
+A Unix source can be reopened explicitly after disconnect; playback never
+reconnects or advances automatically. Live entries are omitted when saving a
+file playlist.
 
 For explicit native integration checks, build
 `make ENCODEC=1 build-encodec/native_encodec`, then run
@@ -91,6 +103,12 @@ pause, EOF, cancellation and unrelated-child preservation. `make ENCODEC=1 test`
 also exercises malformed private worker replies using a separate test binary.
 `tests/headless_encodec.py` checks the real player socket with explicit fixtures;
 its dummy SDL output belongs only to that test process.
+Build `make ENCODEC=1 build-encodec/native_live` and pass the mono asset
+directory and a synthetic mono `.kenc` file with at least two seconds of audio
+to test live input, recovery and the shared audio path. Run
+`python3 tests/headless_live.py ./kilix-amp /path/to/mono.kenc
+--evidence-dir /path/to/new-directory` for actual protocol-2 stdin and Unix
+reconnect controls. The same asset environment variables must be set.
 
 ## Building
 
@@ -146,10 +164,13 @@ overwrite the window layout or volume a windowed session is still using.
 
 ### Control protocol
 
-One JSON object per line in, one per line out. Every reply carries `protocol`,
-so a client speaking another version is told so instead of having its fields
-guessed at — this is a versioned contract between two repositories, and
-bumping it is a breaking change.
+One JSON object per line in, one per line out. Every reply carries `protocol`.
+Version 1 retains the existing file-player contract. Version 2 adds explicit
+source opens, live and model state, typed errors and exact wire timestamps.
+Clients first send a read-only version-2 `ping`; they can fall back to a
+version-1 `ping` when an older backend refuses. See
+[CONTROL-PROTOCOL.md](CONTROL-PROTOCOL.md) for version negotiation, strict
+framing and the complete version-2 fields.
 
 ```console
 $ printf '{"cmd":"state","protocol":1}\n' | nc -U ~/.local/gpu_terminal/kilix/session/kilix-amp.sock
@@ -158,7 +179,7 @@ $ printf '{"cmd":"state","protocol":1}\n' | nc -U ~/.local/gpu_terminal/kilix/se
 
 | Command | Fields | Effect |
 |---|---|---|
-| `ping` | | liveness only |
+| `ping` | | liveness; version 2 also reports capabilities |
 | `state` | | current status (the reply shown above) |
 | `playlist` | | `items` (paths), `index`, `count` |
 | `play` | `index` (optional) | play that entry, else resume or start |
@@ -172,6 +193,7 @@ $ printf '{"cmd":"state","protocol":1}\n' | nc -U ~/.local/gpu_terminal/kilix/se
 | `shuffle` | `on` (optional bool) | set, or toggle when omitted |
 | `repeat` | `mode` (optional 0/1/2) | set, or cycle when omitted |
 | `quit` | | shut the backend down |
+| `open` (v2) | `source_type`, `path` | replace with an explicit file or live Unix source |
 
 Every mutating command answers with the state it produced, so a front end
 redraws in one round trip. Failures reply `"ok":false` with an `error` string;
@@ -206,7 +228,7 @@ is deferred to the next tick so a reply never waits on the decoder.
 | `src/audio.c` | playback engine: libsndfile decode or FluidSynth MIDI render -> preamp/EQ/volume/pan -> SDL queued audio |
 | `src/headless.c` | `--headless`: the engine and playlist wired to the control socket, no windows |
 | `src/control.c` | non-blocking AF_UNIX server; line framing, so a quiet client cannot stall decoding |
-| `src/json.c` | in-house JSON for the protocol: single-line writer, flat-object reader |
+| `src/json.c` | bounded strict request validation, typed field readers and single-line writer |
 | `src/dsp.c` | in-house radix-2 FFT + biquad peaking filters |
 | `src/effects.c` | 21 editor effects/generators (scipy replaced in-house) |
 | `src/audio_data.c` | editor buffer with selection + undo/redo |

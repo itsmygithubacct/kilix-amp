@@ -415,6 +415,39 @@ static void test_default_socket_path(void)
     free(p);
 }
 
+static void test_explicit_versions_and_complete_requests(void)
+{
+    char path[96];
+    ControlServer *cs = listen_at("versions.sock", path, sizeof(path));
+    ASSERT_TRUE(cs != NULL);
+    if (!cs) return;
+    const char *bad[] = {"{\"cmd\":\"play\",\"protocol\":3}\n", "{\"cmd\":\"play\",\"protocol\":2.0}\n",
+        "{\"cmd\":\"play\",\"protocol\":true}\n", "{\"cmd\":\"play\",\"protocol\":\"2\"}\n",
+        "{\"cmd\":\"play\",\"protocol\":2,\"protocol\":1}\n", "{\"cmd\":\"play\"}junk\n",
+        "{\"cmd\":\"play\",\"protoc\\u006fl\":2}\n", "{\"cmd\":\"play\",\"index\":NaN}\n"};
+    for (size_t i = 0u; i < KA_LEN(bad); ++i) {
+        int fd = client_connect(path), before = g_calls;
+        ASSERT_TRUE(fd >= 0);
+        ASSERT_TRUE(send(fd, bad[i], strlen(bad[i]), 0) > 0);
+        control_poll(cs, test_handler, NULL, 1000u);
+        ASSERT_TRUE(strstr(read_line(fd), "\"ok\":false") != NULL);
+        ASSERT_EQ_INT(g_calls, before);
+        close(fd);
+    }
+    int fd = client_connect(path), before = g_calls;
+    const char *valid = "{\"protocol\":2,\"cmd\":\"state\"}\n";
+    ASSERT_TRUE(send(fd, valid, strlen(valid), 0) > 0);
+    control_poll(cs, test_handler, NULL, 1000u);
+    ASSERT_STR_EQ(read_line(fd), "{\"protocol\":2,\"ok\":true,\"saw\":\"state\"}");
+    ASSERT_EQ_INT(g_calls, before + 1);
+    const char embedded[] = "{\"protocol\":2,\"cmd\":\"play\"}\0junk\n";
+    ASSERT_TRUE(send(fd, embedded, sizeof(embedded) - 1u, 0) > 0);
+    control_poll(cs, test_handler, NULL, 1000u);
+    ASSERT_TRUE(strstr(read_line(fd), "\"ok\":false") != NULL);
+    ASSERT_EQ_INT(g_calls, before + 1);
+    close(fd); control_close(cs);
+}
+
 int main(void)
 {
     g_dir = kt_tmpdir();
@@ -433,6 +466,7 @@ int main(void)
     RUN(test_replaced_socket_path_is_preserved_on_close);
     RUN(test_second_listener_refused);
     RUN(test_default_socket_path);
+    RUN(test_explicit_versions_and_complete_requests);
     int rc = kt_summary("control");
     free(g_dir);
     return rc;

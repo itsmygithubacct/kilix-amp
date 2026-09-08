@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <math.h>
 
 #include "audio.h"
 #include "config.h"
@@ -26,6 +30,7 @@ typedef struct {
     int pending_index;
     /* Stops an all-unplayable playlist from skipping forever under repeat. */
     int auto_skip_count;
+    int reply_protocol;
 } Headless;
 
 static volatile sig_atomic_t g_signalled = 0;
@@ -84,7 +89,8 @@ static void hl_play_pending(Headless *h)
     Track *track = playlist_set_current(h->playlist, h->pending_index);
     if (!track)
         return;
-    audio_load(h->audio, track->filepath);
+    if (track->source_kind == KA_ENCODEC_FILE) audio_load(h->audio, track->filepath);
+    else if (!audio_load_live(h->audio, track->source_kind, track->filepath, STDIN_FILENO)) return;
     audio_play(h->audio);
     if (h->pending_pause) audio_pause(h->audio);
     h->pending_pause = false;
@@ -115,6 +121,7 @@ static void hl_toggle(Headless *h)
 static void on_eos(void *ud)
 {
     Headless *h = ud;
+    if (audio_source_info(h->audio).live) return; /* Reconnect is an explicit user action. */
     Track *track = playlist_next_track(h->playlist);
     if (track) {
         h->pending_index = playlist_current_index(h->playlist);
@@ -127,6 +134,7 @@ static void on_error(void *ud, const char *msg)
 {
     Headless *h = ud;
     fprintf(stderr, "kilix-amp: %s\n", msg);
+    if (audio_source_info(h->audio).live) return;
     if (h->auto_skip_count >= playlist_count(h->playlist)) {
         h->auto_skip_count = 0;
         return;
@@ -185,16 +193,78 @@ static void hl_write_status(Headless *h, JsonBuf *reply)
     int pos_ms = audio_get_position_ms(h->audio);
     int dur_ms = audio_get_duration_ms(h->audio);
     const char *file = audio_current_file(h->audio);
+    AudioSourceInfo info = audio_source_info(h->audio);
+    if (h->reply_protocol == 2 && playlist_count(h->playlist) == 0) {
+        file = NULL; info = (AudioSourceInfo){0}; pos_ms = dur_ms = 0;
+    }
+    if (h->reply_protocol == 2 && h->pending_play) {
+        Track *pending = playlist_track(h->playlist, h->pending_index);
+        if (pending) {
+            file = pending->filepath;
+            info = (AudioSourceInfo){0};
+            info.source_kind = pending->source_kind;
+            info.live = pending->source_kind != KA_ENCODEC_FILE;
+            char *extension = ka_ext_lower(file);
+            info.encodec = info.live || strcmp(extension, ".kenc") == 0;
+            free(extension);
+            pos_ms = dur_ms = 0;
+        }
+    }
     json_kv_str(reply, "state", hl_state_name(h));
     json_kv_str(reply, "title", h->title);
     json_kv_str(reply, "file", file ? file : "");
     json_kv_num(reply, "pos", pos_ms / 1000.0);
-    json_kv_num(reply, "len", dur_ms / 1000.0);
+    if (h->reply_protocol == 2 && (info.live || !info.ready)) json_kv_null(reply, "len");
+    else json_kv_num(reply, "len", dur_ms / 1000.0);
     json_kv_int(reply, "index", playlist_current_index(h->playlist));
     json_kv_int(reply, "count", playlist_count(h->playlist));
     json_kv_int(reply, "volume", h->volume);
     json_kv_bool(reply, "shuffle", playlist_shuffle(h->playlist));
     json_kv_int(reply, "repeat", playlist_repeat(h->playlist));
+    if (h->reply_protocol == 2) {
+        const char *kind = info.source_kind == KA_ENCODEC_STDIN ? "encodec-stdin"
+            : info.source_kind == KA_ENCODEC_SOCKET ? "encodec-unix" : "file";
+        json_kv_str(reply, "source_type", file && *file ? kind : "none");
+        json_kv_str(reply, "codec", info.encodec ? "encodec" : file && *file ? "pcm" : "none");
+        json_kv_int(reply, "profile", info.profile);
+        json_kv_int(reply, "sample_rate", info.sample_rate);
+        json_kv_int(reply, "channels", info.channels);
+        json_kv_int(reply, "bitrate", info.bitrate);
+        json_kv_int(reply, "threads", info.threads);
+        json_kv_bool(reply, "model_ready", info.encodec && info.ready);
+        json_kv_bool(reply, "ready", info.ready);
+        json_kv_bool(reply, "live", info.live);
+        json_kv_bool(reply, "buffering", h->pending_play || info.buffering);
+        json_kv_bool(reply, "seekable", info.seekable);
+        json_kv_bool(reply, "ended", info.ended);
+        json_kv_bool(reply, "degraded", info.degraded);
+        json_kv_bool(reply, "reconnect_required", info.reconnect_required);
+        json_kv_bool(reply, "wire_valid", info.wire_valid);
+        /* Decimal strings retain exact unsigned 64-bit wire values in clients
+         * whose JSON numbers cannot represent every integer. */
+        char wire[32];
+        if (info.wire_valid) {
+            snprintf(wire, sizeof(wire), "%" PRIu64, info.wire_pts_ms);
+            json_kv_str(reply, "wire_pts_ms", wire);
+            snprintf(wire, sizeof(wire), "%" PRIu64, info.wire_epoch);
+            json_kv_str(reply, "wire_epoch", wire);
+        } else {
+            json_kv_null(reply, "wire_pts_ms"); json_kv_null(reply, "wire_epoch");
+        }
+        json_kv_int(reply, "source_error_code", info.error_code);
+        json_kv_str(reply, "source_error_message", h->pending_play ? "" : audio_error(h->audio));
+        json_kv_bool(reply, "source_error_recoverable", info.error_code != 0u);
+    }
+}
+
+static void hl_refuse(Headless *h, JsonBuf *reply, const char *code, const char *message)
+{
+    json_kv_bool(reply, "ok", false);
+    json_kv_str(reply, "error", message);
+    if (h->reply_protocol == 2) {
+        json_kv_str(reply, "error_code", code);
+        json_kv_bool(reply, "error_recoverable", true);
+    }
 }
 
 static void hl_write_playlist(Headless *h, JsonBuf *reply)
@@ -217,9 +287,43 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
     long long number = 0;
     double seconds = 0;
     bool flag = false;
+    long long protocol = 1;
+    (void)json_get_int(request, "protocol", &protocol);
+    h->reply_protocol = (int)protocol;
+    bool live_source = audio_source_info(h->audio).live;
+    if (h->pending_play) {
+        Track *pending = playlist_track(h->playlist, h->pending_index);
+        if (pending) live_source = pending->source_kind != KA_ENCODEC_FILE;
+    }
+    if (protocol == 1 && live_source
+        && strcmp(cmd, "ping") && strcmp(cmd, "quit") && strcmp(cmd, "stop")) {
+        hl_refuse(h, reply, "PROTOCOL_REQUIRED", "live source controls require protocol 2"); return;
+    }
+
+    /* Optional fields have to be correctly typed when present; they must not
+     * accidentally select the no-argument toggle/resume behavior. */
+    const char *integers[] = {"index", "level", "mode"};
+    for (size_t i = 0u; i < 3u; ++i) {
+        if (json_has_key(request, integers[i]) && !json_get_int(request, integers[i], &number)) {
+            hl_refuse(h, reply, "INVALID_REQUEST", "integer argument has the wrong type"); return;
+        }
+    }
+    if (json_has_key(request, "on") && !json_get_bool(request, "on", &flag)) {
+        hl_refuse(h, reply, "INVALID_REQUEST", "on must be boolean"); return;
+    }
 
     if (strcmp(cmd, "ping") == 0) {
         json_kv_bool(reply, "ok", true);
+        if (protocol == 2) {
+            json_kv_int(reply, "max_protocol", CONTROL_PROTOCOL_MAX);
+#ifdef KA_WITH_ENCODEC
+            json_kv_bool(reply, "encodec", true);
+            json_kv_bool(reply, "live_sources", true);
+#else
+            json_kv_bool(reply, "encodec", false);
+            json_kv_bool(reply, "live_sources", false);
+#endif
+        }
         return;
     }
     if (strcmp(cmd, "state") == 0) {
@@ -232,11 +336,32 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         hl_write_playlist(h, reply);
         return;
     }
-    if (strcmp(cmd, "play") == 0) {
+    if (strcmp(cmd, "open") == 0 && protocol == 2) {
+        char source_type[32], path[4096];
+        if (!json_get_str_exact(request, "source_type", source_type, sizeof(source_type))
+            || !json_get_str_exact(request, "path", path, sizeof(path)) || path[0] == '\0') {
+            hl_refuse(h, reply, "INVALID_REQUEST", "open needs source_type and an exact nonempty path"); return;
+        }
+        KaEncodecKind kind;
+        if (!strcmp(source_type, "file")) kind = KA_ENCODEC_FILE;
+        else if (!strcmp(source_type, "encodec-unix")) kind = KA_ENCODEC_SOCKET;
+        else { hl_refuse(h, reply, "UNSUPPORTED_SOURCE", "stdin is selected only at process startup; use file or encodec-unix"); return; }
+        if (kind == KA_ENCODEC_FILE && (!ka_is_file(path) || !playlist_is_audio_ext(path))) {
+            hl_refuse(h, reply, "SOURCE_UNAVAILABLE", "no playable file at that path"); return;
+        }
+        if (kind == KA_ENCODEC_SOCKET && (path[0] != '/' || strlen(path) >= 108u)) {
+            hl_refuse(h, reply, "INVALID_REQUEST", "Unix source needs a bounded absolute socket path"); return;
+        }
+        audio_stop(h->audio);
+        h->pending_play = false;
+        playlist_clear(h->playlist);
+        if (kind == KA_ENCODEC_FILE) playlist_add_file(h->playlist, path);
+        else playlist_add_live(h->playlist, path, kind);
+        if (!hl_queue_index(h, 0)) { hl_refuse(h, reply, "SOURCE_UNAVAILABLE", "source could not be queued"); return; }
+    } else if (strcmp(cmd, "play") == 0) {
         if (json_get_int(request, "index", &number)) {
-            if (!hl_queue_index(h, (int)number)) {
-                json_kv_bool(reply, "ok", false);
-                json_kv_str(reply, "error", "index out of range");
+            if (number < 0 || number >= playlist_count(h->playlist) || !hl_queue_index(h, (int)number)) {
+                hl_refuse(h, reply, "INVALID_REQUEST", "index out of range");
                 hl_write_status(h, reply);
                 return;
             }
@@ -263,27 +388,30 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         if (track)
             hl_queue_index(h, playlist_current_index(h->playlist));
     } else if (strcmp(cmd, "seek") == 0) {
+        if (protocol == 2 && (h->pending_play || !audio_source_info(h->audio).seekable)) {
+            hl_refuse(h, reply, "NOT_SEEKABLE", "source is live, unavailable or still loading"); return;
+        }
         if (!json_get_num(request, "pos", &seconds)) {
-            json_kv_bool(reply, "ok", false);
-            json_kv_str(reply, "error", "seek needs a \"pos\" in seconds");
+            hl_refuse(h, reply, "INVALID_REQUEST", "seek needs a \"pos\" in seconds");
             return;
         }
         if (seconds < 0)
             seconds = 0;
+        if (!isfinite(seconds) || seconds > (double)INT_MAX / 1000.0) {
+            hl_refuse(h, reply, "INVALID_REQUEST", "seek position is out of range"); return;
+        }
         audio_seek(h->audio, (int)(seconds * 1000.0));
     } else if (strcmp(cmd, "volume") == 0) {
         if (!json_get_int(request, "level", &number)) {
-            json_kv_bool(reply, "ok", false);
-            json_kv_str(reply, "error", "volume needs a \"level\" of 0-100");
+            hl_refuse(h, reply, "INVALID_REQUEST", "volume needs a \"level\" of 0-100");
             return;
         }
         h->volume = (int)KA_CLAMP(number, 0, 100);
         audio_set_volume(h->audio, h->volume);
     } else if (strcmp(cmd, "add") == 0) {
         char path[4096];
-        if (!json_get_str(request, "path", path, sizeof(path)) || !path[0]) {
-            json_kv_bool(reply, "ok", false);
-            json_kv_str(reply, "error", "add needs a \"path\" string");
+        if (!json_get_str_exact(request, "path", path, sizeof(path)) || !path[0]) {
+            hl_refuse(h, reply, "INVALID_REQUEST", "add needs a \"path\" string");
             return;
         }
         int before = playlist_count(h->playlist);
@@ -292,8 +420,7 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         else if (ka_is_file(path))
             playlist_add_file(h->playlist, path);
         if (playlist_count(h->playlist) == before) {
-            json_kv_bool(reply, "ok", false);
-            json_kv_str(reply, "error", "nothing playable at that path");
+            hl_refuse(h, reply, "SOURCE_UNAVAILABLE", "nothing playable at that path");
             hl_write_status(h, reply);
             return;
         }
@@ -319,23 +446,23 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         json_kv_bool(reply, "ok", true);
         return;
     } else {
-        json_kv_bool(reply, "ok", false);
         char message[128];
         snprintf(message, sizeof(message), "unknown command: %s", cmd);
-        json_kv_str(reply, "error", message);
+        hl_refuse(h, reply, "UNKNOWN_COMMAND", message);
         return;
     }
 
     /* Every mutating command answers with the state it produced, so a client
      * needs one round trip rather than two to redraw. */
     json_kv_bool(reply, "ok", true);
+    if (protocol == 1 && audio_source_info(h->audio).live) return;
     hl_write_status(h, reply);
 }
 
 /* --- Entry point --- */
 
 int headless_run(const char *const *files, int n_files,
-                 const char *socket_path)
+                 const char *socket_path, KaEncodecKind live_kind, const char *live_path)
 {
     Headless h = {0};
     h.running = true;
@@ -401,6 +528,7 @@ int headless_run(const char *const *files, int n_files,
         else if (ka_is_file(files[i]))
             playlist_add_file(h.playlist, files[i]);
     }
+    if (live_kind != KA_ENCODEC_FILE) playlist_add_live(h.playlist, live_path, live_kind);
     if (playlist_count(h.playlist) > 0) {
         playlist_set_current(h.playlist, 0);
         hl_queue_current(&h);

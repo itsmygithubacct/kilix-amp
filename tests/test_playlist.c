@@ -382,6 +382,34 @@ static void test_is_audio_ext(void)
     ASSERT_FALSE(playlist_is_audio_ext("y"));
 }
 
+static void test_live_duration_and_file_playlist_save(void)
+{
+    char *first = make_audio_file("live-first.mp3");
+    char *second = make_audio_file("live-second.mp3");
+    Playlist *pl = playlist_new();
+    playlist_add_live(pl, "stdin", KA_ENCODEC_STDIN);
+    playlist_add_file(pl, first);
+    playlist_add_live(pl, "/private/live.sock", KA_ENCODEC_SOCKET);
+    playlist_add_file(pl, second);
+    ASSERT_EQ_INT(playlist_count(pl), 4);
+    char *duration = track_duration_str(playlist_track(pl, 0));
+    ASSERT_STR_EQ(duration, "LIVE"); free(duration);
+    duration = playlist_total_duration_str(pl);
+    ASSERT_STR_EQ(duration, "LIVE"); free(duration);
+    for (int i = 0; i < 2; ++i) {
+        char *path = ka_path_join(g_dir, i ? "live-save.pls" : "live-save.m3u");
+        if (i) playlist_save_pls(pl, path); else playlist_save_m3u(pl, path);
+        Playlist *loaded = playlist_new();
+        if (i) playlist_load_pls(loaded, path); else playlist_load_m3u(loaded, path);
+        ASSERT_EQ_INT(playlist_count(loaded), 2);
+        ASSERT_STR_EQ(playlist_track(loaded, 0)->filepath, first);
+        ASSERT_STR_EQ(playlist_track(loaded, 1)->filepath, second);
+        ASSERT_EQ_INT(playlist_track(loaded, 0)->source_kind, KA_ENCODEC_FILE);
+        playlist_free(loaded); free(path);
+    }
+    playlist_free(pl); free(first); free(second);
+}
+
 int main(void)
 {
     g_dir = kt_tmpdir();
@@ -402,5 +430,6 @@ int main(void)
     RUN(test_shuffle_empty_then_load_pls);
     RUN(test_recursive_directory_skips_symlink_cycle);
     RUN(test_is_audio_ext);
+    RUN(test_live_duration_and_file_playlist_save);
     return kt_summary("test_playlist");
 }
