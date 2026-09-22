@@ -54,6 +54,10 @@ $(OBJDIR)/native_encodec: $(TESTDIR)/native_encodec.c $(LIBOBJS)
 $(OBJDIR)/native_live: $(TESTDIR)/native_live.c $(LIBOBJS)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $< $(LIBOBJS) $(LDLIBS)
 
+# Observation-only LD_PRELOAD probe for tests/headless_admission_stereo.py (ENCODEC=1).
+$(OBJDIR)/admission_probe.so: $(TESTDIR)/admission_probe.c | $(OBJDIR)
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ldl
+
 test: $(TESTBINS)
 	@fail=0; for t in $(TESTBINS); do \
 		echo "== $$t"; $$t || fail=1; \
