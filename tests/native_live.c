@@ -26,6 +26,8 @@ static float reference[48000];
 static uint8_t c5_records[50][KENC_MAX_PACKET_BYTES];
 static size_t c5_sizes[50];
 static float c5_reference[48000];
+static float c5_reference_one_thread[48000];
+static unsigned int worker_threads = 2u;
 static kenc_epoch_start stream_profile = KENC_EPOCH_START_C0;
 static uint8_t (*active_records)[KENC_MAX_PACKET_BYTES] = records;
 static size_t *active_sizes = sizes;
@@ -56,6 +58,25 @@ static void load_reference(const char *path)
     kenc_file_source_free(source);
 }
 
+static void decode_c5(kenc_model *model, uint8_t threads, float *out)
+{
+    kenc_decoder *decoder = NULL;
+    kenc_options options = kenc_options_default();
+    options.codebooks = file_info.codebooks; options.threads = threads;
+    ASSERT_EQ_INT(kenc_decoder_create(&decoder, model, &options), KENC_OK);
+    ASSERT_EQ_INT(kenc_decoder_set_epoch_start(decoder, KENC_EPOCH_START_C5_R4), KENC_OK);
+    for (size_t i = 0u; i < 50u; ++i) {
+        int16_t decoded[KENC_PACKET_SAMPLES]; size_t count = 0u;
+        ASSERT_EQ_INT(kenc_decoder_pull_s16(decoder, c5_records[i], c5_sizes[i], decoded,
+            KENC_PACKET_SAMPLES, &count, NULL), KENC_OK);
+        ASSERT_EQ_INT(count, KENC_PACKET_SAMPLES);
+        for (size_t j = 0u; j < KENC_PACKET_SAMPLES; ++j) {
+            out[i * KENC_PACKET_SAMPLES + j] = (float)decoded[j] / 32768.0f;
+        }
+    }
+    kenc_decoder_free(decoder);
+}
+
 static void build_c5(void)
 {
     kenc_model *model = NULL; kenc_encoder *encoder = NULL; kenc_decoder *decoder = NULL;
@@ -81,7 +102,10 @@ static void build_c5(void)
             c5_reference[i * KENC_PACKET_SAMPLES + j] = (float)decoded[j] / 32768.0f;
         }
     }
-    kenc_decoder_free(decoder); kenc_encoder_free(encoder); kenc_model_free(model);
+    kenc_decoder_free(decoder); kenc_encoder_free(encoder);
+    /* The worker decodes at its selected thread count; references match it. */
+    decode_c5(model, 1u, c5_reference_one_thread);
+    kenc_model_free(model);
 }
 
 static void select_stream(kenc_epoch_start profile)
@@ -108,7 +132,8 @@ static void producer(int fd, const char *mode)
     uint8_t header[KENC_FILE_HEADER_BYTES];
     kenc_file_info live = {1u, file_info.codebooks, KENC_FILE_LIVE, 0u};
     /* A C0 header for C5-R4 records is the marker mismatch a decoder must refuse. */
-    kenc_epoch_start header_profile = !strcmp(mode, "c5-records-c0-header") ? KENC_EPOCH_START_C0 : stream_profile;
+    kenc_epoch_start header_profile = !strcmp(mode, "c5-records-c0-header") ? KENC_EPOCH_START_C0
+        : !strcmp(mode, "c0-records-c5-header") ? KENC_EPOCH_START_C5_R4 : stream_profile;
     if (kenc_file_header_write_epoch_start(&live, header_profile, header, sizeof(header)) != KENC_OK) _exit(2);
     if (!strcmp(mode, "header")) header[0]++;
     if (!strcmp(mode, "marker-unknown")) header[42] = 2u;          /* version 2, unknown marker */
@@ -127,14 +152,21 @@ static void producer(int fd, const char *mode)
     }
     for (size_t i = 0u; i < 50u; ++i) {
         if ((!strcmp(mode, "join") && i < 7u) || (!strcmp(mode, "loss") && i == 10u)) continue;
-        memset(prefix, 0, sizeof(prefix)); prefix[0] = (uint8_t)active_sizes[i];
+        {
+            bool other_prefix = !strcmp(mode, "c0-records-c5-header") || (!strcmp(mode, "switch-to-c0") && i >= 25u);
+            memset(prefix, 0, sizeof(prefix)); prefix[0] = (uint8_t)(other_prefix ? sizes[i] : active_sizes[i]);
+        }
         write_all(fd, prefix, sizeof(prefix));
         if (!strcmp(mode, "packet-empty")) return;
         if (!strcmp(mode, "packet-truncated")) { write_all(fd, active_records[i], active_sizes[i] - 1u); return; }
-        uint8_t copy[KENC_MAX_PACKET_BYTES]; memcpy(copy, active_records[i], active_sizes[i]);
+        /* Records from the other profile: from the start, or from the second epoch on. */
+        bool other = !strcmp(mode, "c0-records-c5-header") || (!strcmp(mode, "switch-to-c0") && i >= 25u);
+        const uint8_t *record = other ? records[i] : active_records[i];
+        size_t record_size = other ? sizes[i] : active_sizes[i];
+        uint8_t copy[KENC_MAX_PACKET_BYTES]; memcpy(copy, record, record_size);
         if (!strcmp(mode, "packet-malformed")) copy[0]++;
         /* Irregular physical fragments must not change packet PCM or metadata. */
-        write_all(fd, copy, 3u); write_all(fd, copy + 3u, active_sizes[i] - 3u);
+        write_all(fd, copy, 3u); write_all(fd, copy + 3u, record_size - 3u);
     }
     memset(prefix, 0, sizeof(prefix)); write_all(fd, prefix, sizeof(prefix));
 }
@@ -168,6 +200,10 @@ static void drain(KaEncodec *source, const char *mode, unsigned int expected_err
     ASSERT_FALSE(ka_encodec_seek(source, 0u));
     if (expected_error) {
         ASSERT_TRUE(info.failed);
+        /* A refused stream emits nothing, except a later profile switch, which
+         * keeps exactly the epoch decoded before the mismatched RESET. */
+        ASSERT_EQ_INT(total, !strcmp(mode, "switch-to-c0") ? 24000u : 0u);
+        ASSERT_TRUE(exact);
         ASSERT_EQ_INT(ka_encodec_error_code(source), expected_error);
         ASSERT_TRUE(SDL_GetTicks() - start < 11000u);
         ASSERT_FALSE(ended);
@@ -197,7 +233,7 @@ static void pipe_case(const char *mode, unsigned int error)
     if (child < 0) exit(2);
     if (child == 0) { close(fds[0]); producer(fds[1], mode); close(fds[1]); _exit(0); }
     close(fds[1]);
-    KaEncodec *source = ka_encodec_open_source(KA_ENCODEC_STDIN, "stdin", fds[0], assets, "", 2u);
+    KaEncodec *source = ka_encodec_open_source(KA_ENCODEC_STDIN, "stdin", fds[0], assets, "", worker_threads);
     drain(source, mode, error);
     ASSERT_EQ_INT(fcntl(fds[0], F_GETFL), flags);
     close(fds[0]); ka_encodec_close(source); finish_child(child);
@@ -277,7 +313,7 @@ static void pcm_tap(void *unused, const float *pcm, size_t frames,
     if (channels != 1u || rate != 24000u || position != tapped || frames > 48000u - tapped) {
         tap_exact = false; return;
     }
-    if (memcmp(pcm, reference + tapped, frames * sizeof(*pcm))) tap_exact = false;
+    if (memcmp(pcm, active_reference + tapped, frames * sizeof(*pcm))) tap_exact = false;
     tapped += frames;
 }
 static void audio_failure(void *unused, const char *error)
@@ -352,13 +388,21 @@ int main(int argc, char **argv)
     build_c5();
     ASSERT_TRUE(memcmp(c5_reference, reference, sizeof(reference)) != 0);
     select_stream(KENC_EPOCH_START_C5_R4);
-    pipe_case("normal", 0u); pipe_case("join", 0u); pipe_case("loss", 0u); socket_case(false);
-    pipe_case("c5-records-c0-header", 5u);
+    pipe_case("normal", 0u); pipe_case("join", 0u); pipe_case("loss", 0u);
+    socket_case(true); socket_case(false);
+    /* One worker thread decodes against its own one-thread reference. */
+    worker_threads = 1u; active_reference = c5_reference_one_thread;
+    pipe_case("normal", 0u);
+    worker_threads = 2u; active_reference = c5_reference;
+    pipe_case("c5-records-c0-header", 5u); pipe_case("c0-records-c5-header", 5u);
+    pipe_case("switch-to-c0", 5u);
     pipe_case("marker-unknown", 5u); pipe_case("marker-v2-c0", 5u);
     select_stream(KENC_EPOCH_START_C0);
     if (strcmp(argv[3], "--development-only")) {
         setenv("KILIX_CONTENT_ROOT", argv[3], 1);
         shared_audio_case();
+        /* The installed admission path selects the header's profile too. */
+        select_stream(KENC_EPOCH_START_C5_R4); shared_audio_case(); select_stream(KENC_EPOCH_START_C0);
     } else puts("Explicit development live-byte checks: installed shared audio path not exercised.");
     thread_selection_case();
     return kt_summary("native EnCodec live");

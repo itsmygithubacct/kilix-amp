@@ -7,8 +7,11 @@ content admission and the installed 24 kHz model with its durable receipts.
 model. The selected profile is
 mono, 24 kHz, 3/6/12 kb/s (4/8/16 codebooks). Stereo remains a local-file format.
 
-Start with the canonical 64-byte header produced by
-`kenc_file_header_write` for `kenc_file_info {1, codebooks, KENC_FILE_LIVE, 0}`.
+Start with the canonical 64-byte header for
+`kenc_file_info {1, codebooks, KENC_FILE_LIVE, 0}`: from
+`kenc_file_header_write` for a C0 stream, or from
+`kenc_file_header_write_epoch_start` with `KENC_EPOCH_START_C5_R4` for a C5-R4
+stream (see below).
 It has zero duration, record and index counts, a 64-byte data offset and the
 standard 25-packet mono reset interval. Amp validates the complete header
 through the shared library. A regular `.kenc` header is not a live header.
@@ -19,7 +22,12 @@ A C5-R4 producer uses `kenc_file_header_write_epoch_start(..., KENC_EPOCH_START_
 which produces a version-2 header with marker 1, and its RESET records carry
 the pre-roll flag. Amp selects the decoder profile from the header. An unknown
 marker, a version-2 header naming C0, or a RESET record whose marker differs
-from the header's profile is refused as a protocol error.
+from the header's profile is refused as a protocol error. This applies at any
+RESET, including one after audio has already played.
+
+Live input is one-way. Amp sends nothing back to the producer, so there is no
+capability exchange: the producer chooses the profile, and a producer that must
+also serve pre-marker readers sends a version-1 (C0) header.
 
 Each following record is a four-byte little-endian unsigned length followed
 by one complete, opaque, codec-authored KMA2 packet. Length is 1 through
