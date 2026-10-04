@@ -551,8 +551,18 @@ static int worker_live(const Header *request, char *const paths[3])
     uint32_t result = input < 0 ? LIVE_ERR_ENDPOINT : KENC_OK;
     uint8_t bytes[KENC_FILE_HEADER_BYTES]; kenc_file_info info;
     kenc_model *model = NULL; kenc_decoder *decoder = NULL;
+    /* OD-AT: the live header carries the producer's epoch-start profile. A
+     * version-1 header is C0; a version-2 header names C5-R4. The decoder
+     * follows it, and an unknown marker is refused. */
+    kenc_epoch_start epoch_start = KENC_EPOCH_START_C0;
     if (result == KENC_OK) { result = live_read(input, is_socket, bytes, sizeof(bytes), monotonic_ms() + LIVE_TIMEOUT_MS, false); }
-    if (result == KENC_OK) { result = kenc_file_header_read(&info, bytes, sizeof(bytes)); }
+    if (result == KENC_OK) {
+        result = kenc_file_header_read_epoch_start(&info, &epoch_start, bytes, sizeof(bytes));
+        /* A profile refusal is a protocol refusal here. It is mapped where the
+         * library returns it: KENC_ERR_EPOCH_START shares its value with this
+         * file's LIVE_ERR_TIMEOUT, so the two cannot be told apart later. */
+        if (result == KENC_ERR_EPOCH_START) { result = KENC_ERR_PROTOCOL; }
+    }
     if (result == KENC_OK && (info.flags != KENC_FILE_LIVE || info.profile != KENC_FILE_PROFILE_MONO)) {
         result = KENC_ERR_PROTOCOL;
     }
@@ -568,6 +578,10 @@ static int worker_live(const Header *request, char *const paths[3])
         } else { result = kenc_model_load(&model, paths[1]); }
     }
     if (result == KENC_OK) { result = kenc_decoder_create(&decoder, model, &options); }
+    if (result == KENC_OK) {
+        result = kenc_decoder_set_epoch_start(decoder, epoch_start);
+        if (result == KENC_ERR_EPOCH_START) { result = KENC_ERR_PROTOCOL; }
+    }
     kenc_model_free(model);
     if (result != KENC_OK) { goto done; }
     Header response = {.magic = MAGIC, .version = WIRE_VERSION, .kind = REPLY_READY,
@@ -597,6 +611,8 @@ static int worker_live(const Header *request, char *const paths[3])
         if (result != KENC_OK) { break; } /* Malformed bytes are not epoch loss. */
         int16_t decoded[KENC_PACKET_SAMPLES]; size_t count = 0u;
         result = kenc_decoder_pull_s16(decoder, packet, length, decoded, KENC_PACKET_SAMPLES, &count, NULL);
+        /* A RESET record whose marker differs from the header's profile. */
+        if (result == KENC_ERR_EPOCH_START) { result = KENC_ERR_PROTOCOL; break; }
         if (result == KENC_ERR_PROTOCOL) {
             if (++discarded > 50u) { break; }
             if (recovery_deadline == 0u) { recovery_deadline = monotonic_ms() + LIVE_TIMEOUT_MS; }

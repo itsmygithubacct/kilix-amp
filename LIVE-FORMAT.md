@@ -13,6 +13,14 @@ It has zero duration, record and index counts, a 64-byte data offset and the
 standard 25-packet mono reset interval. Amp validates the complete header
 through the shared library. A regular `.kenc` header is not a live header.
 
+The header also carries the producer's epoch-start profile (owner decision
+OD-AT). `kenc_file_header_write` produces a version-1 header, which means C0.
+A C5-R4 producer uses `kenc_file_header_write_epoch_start(..., KENC_EPOCH_START_C5_R4, ...)`,
+which produces a version-2 header with marker 1, and its RESET records carry
+the pre-roll flag. Amp selects the decoder profile from the header. An unknown
+marker, a version-2 header naming C0, or a RESET record whose marker differs
+from the header's profile is refused as a protocol error.
+
 Each following record is a four-byte little-endian unsigned length followed
 by one complete, opaque, codec-authored KMA2 packet. Length is 1 through
 `KENC_MAX_PACKET_BYTES` (160); larger values are refused before allocation.

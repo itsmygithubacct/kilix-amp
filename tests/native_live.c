@@ -6,6 +6,7 @@
 #include <SDL.h>
 #include <kilix_encodec_file.h>
 #include <errno.h>
+#include <math.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -19,6 +20,16 @@ static kenc_file_info file_info;
 static uint8_t records[50][KENC_MAX_PACKET_BYTES];
 static size_t sizes[50];
 static float reference[48000];
+/* OD-AT: a C5-R4 stream encoded here from the same audio, and the PCM a C5-R4
+ * decoder produces from it at the worker's thread count. The active_* pointers
+ * select which stream the producer sends and drain() compares against. */
+static uint8_t c5_records[50][KENC_MAX_PACKET_BYTES];
+static size_t c5_sizes[50];
+static float c5_reference[48000];
+static kenc_epoch_start stream_profile = KENC_EPOCH_START_C0;
+static uint8_t (*active_records)[KENC_MAX_PACKET_BYTES] = records;
+static size_t *active_sizes = sizes;
+static float *active_reference = reference;
 
 static void load_reference(const char *path)
 {
@@ -45,6 +56,43 @@ static void load_reference(const char *path)
     kenc_file_source_free(source);
 }
 
+static void build_c5(void)
+{
+    kenc_model *model = NULL; kenc_encoder *encoder = NULL; kenc_decoder *decoder = NULL;
+    kenc_options options = kenc_options_default();
+    options.codebooks = file_info.codebooks; options.threads = 2u;
+    ASSERT_EQ_INT(kenc_model_load(&model, assets), KENC_OK);
+    ASSERT_EQ_INT(kenc_encoder_create(&encoder, model, &options), KENC_OK);
+    ASSERT_EQ_INT(kenc_encoder_set_epoch_start(encoder, KENC_EPOCH_START_C5_R4), KENC_OK);
+    ASSERT_EQ_INT(kenc_decoder_create(&decoder, model, &options), KENC_OK);
+    ASSERT_EQ_INT(kenc_decoder_set_epoch_start(decoder, KENC_EPOCH_START_C5_R4), KENC_OK);
+    for (size_t i = 0u; i < 50u; ++i) {
+        int16_t pcm[KENC_PACKET_SAMPLES], decoded[KENC_PACKET_SAMPLES]; size_t count = 0u;
+        for (size_t j = 0u; j < KENC_PACKET_SAMPLES; ++j) {
+            float value = reference[i * KENC_PACKET_SAMPLES + j] * 32768.0f;
+            pcm[j] = (int16_t)(value > 32767.0f ? 32767 : value < -32768.0f ? -32768 : (int)lrintf(value));
+        }
+        ASSERT_EQ_INT(kenc_encoder_push_s16(encoder, pcm, KENC_PACKET_SAMPLES, (uint64_t)i * 40u,
+            c5_records[i], sizeof(c5_records[i]), &c5_sizes[i]), KENC_OK);
+        ASSERT_EQ_INT(kenc_decoder_pull_s16(decoder, c5_records[i], c5_sizes[i], decoded,
+            KENC_PACKET_SAMPLES, &count, NULL), KENC_OK);
+        ASSERT_EQ_INT(count, KENC_PACKET_SAMPLES);
+        for (size_t j = 0u; j < KENC_PACKET_SAMPLES; ++j) {
+            c5_reference[i * KENC_PACKET_SAMPLES + j] = (float)decoded[j] / 32768.0f;
+        }
+    }
+    kenc_decoder_free(decoder); kenc_encoder_free(encoder); kenc_model_free(model);
+}
+
+static void select_stream(kenc_epoch_start profile)
+{
+    stream_profile = profile;
+    bool c5 = profile == KENC_EPOCH_START_C5_R4;
+    active_records = c5 ? c5_records : records;
+    active_sizes = c5 ? c5_sizes : sizes;
+    active_reference = c5 ? c5_reference : reference;
+}
+
 static void write_all(int fd, const uint8_t *bytes, size_t size)
 {
     while (size > 0u) {
@@ -59,12 +107,17 @@ static void producer(int fd, const char *mode)
 {
     uint8_t header[KENC_FILE_HEADER_BYTES];
     kenc_file_info live = {1u, file_info.codebooks, KENC_FILE_LIVE, 0u};
-    if (kenc_file_header_write(&live, header, sizeof(header)) != KENC_OK) _exit(2);
+    /* A C0 header for C5-R4 records is the marker mismatch a decoder must refuse. */
+    kenc_epoch_start header_profile = !strcmp(mode, "c5-records-c0-header") ? KENC_EPOCH_START_C0 : stream_profile;
+    if (kenc_file_header_write_epoch_start(&live, header_profile, header, sizeof(header)) != KENC_OK) _exit(2);
     if (!strcmp(mode, "header")) header[0]++;
+    if (!strcmp(mode, "marker-unknown")) header[42] = 2u;          /* version 2, unknown marker */
+    if (!strcmp(mode, "marker-v2-c0")) { header[4] = 2u; header[42] = 0u; } /* version 2 naming C0 */
     if (!strcmp(mode, "stereo")) header[8] = 2u;
     write_all(fd, header, sizeof(header));
     if (!strcmp(mode, "timeout")) { for (;;) pause(); }
-    if (!strcmp(mode, "disconnect") || !strcmp(mode, "header") || !strcmp(mode, "stereo")) return;
+    if (!strcmp(mode, "disconnect") || !strcmp(mode, "header") || !strcmp(mode, "stereo")
+        || !strcmp(mode, "marker-unknown") || !strcmp(mode, "marker-v2-c0")) return;
     uint8_t prefix[4] = {1u, 0u, 0u, 0u};
     if (!strcmp(mode, "prefix")) { write_all(fd, prefix, 2u); return; }
     if (!strcmp(mode, "oversize")) { memset(prefix, 255, sizeof(prefix)); write_all(fd, prefix, 4u); return; }
@@ -74,14 +127,14 @@ static void producer(int fd, const char *mode)
     }
     for (size_t i = 0u; i < 50u; ++i) {
         if ((!strcmp(mode, "join") && i < 7u) || (!strcmp(mode, "loss") && i == 10u)) continue;
-        memset(prefix, 0, sizeof(prefix)); prefix[0] = (uint8_t)sizes[i];
+        memset(prefix, 0, sizeof(prefix)); prefix[0] = (uint8_t)active_sizes[i];
         write_all(fd, prefix, sizeof(prefix));
         if (!strcmp(mode, "packet-empty")) return;
-        if (!strcmp(mode, "packet-truncated")) { write_all(fd, records[i], sizes[i] - 1u); return; }
-        uint8_t copy[KENC_MAX_PACKET_BYTES]; memcpy(copy, records[i], sizes[i]);
+        if (!strcmp(mode, "packet-truncated")) { write_all(fd, active_records[i], active_sizes[i] - 1u); return; }
+        uint8_t copy[KENC_MAX_PACKET_BYTES]; memcpy(copy, active_records[i], active_sizes[i]);
         if (!strcmp(mode, "packet-malformed")) copy[0]++;
         /* Irregular physical fragments must not change packet PCM or metadata. */
-        write_all(fd, copy, 3u); write_all(fd, copy + 3u, sizes[i] - 3u);
+        write_all(fd, copy, 3u); write_all(fd, copy + 3u, active_sizes[i] - 3u);
     }
     memset(prefix, 0, sizeof(prefix)); write_all(fd, prefix, sizeof(prefix));
 }
@@ -107,7 +160,7 @@ static void drain(KaEncodec *source, const char *mode, unsigned int expected_err
         size_t offset = !strcmp(mode, "join") ? total + 24000u
             : !strcmp(mode, "loss") && total >= 9600u ? total + 14400u : total;
         if (position != total || (size_t)count > expected - total || offset + (size_t)count > 48000u) { exact = false; break; }
-        if (memcmp(pcm, reference + offset, (size_t)count * sizeof(*pcm))) exact = false;
+        if (memcmp(pcm, active_reference + offset, (size_t)count * sizeof(*pcm))) exact = false;
         total += (size_t)count;
     }
     KaEncodecInfo info = ka_encodec_info(source);
@@ -295,6 +348,14 @@ int main(int argc, char **argv)
     pipe_case("packet-truncated", 4u); pipe_case("packet-malformed", 5u);
     pipe_case("packet-empty", 4u);
     pipe_case("timeout", 7u); pipe_case("trickle", 7u);
+    /* OD-AT: the decoder follows the live header's epoch-start marker. */
+    build_c5();
+    ASSERT_TRUE(memcmp(c5_reference, reference, sizeof(reference)) != 0);
+    select_stream(KENC_EPOCH_START_C5_R4);
+    pipe_case("normal", 0u); pipe_case("join", 0u); pipe_case("loss", 0u); socket_case(false);
+    pipe_case("c5-records-c0-header", 5u);
+    pipe_case("marker-unknown", 5u); pipe_case("marker-v2-c0", 5u);
+    select_stream(KENC_EPOCH_START_C0);
     if (strcmp(argv[3], "--development-only")) {
         setenv("KILIX_CONTENT_ROOT", argv[3], 1);
         shared_audio_case();
