@@ -42,10 +42,32 @@ static float *active_reference = reference;
 static uint8_t disc_records[2][50][KENC_MAX_PACKET_BYTES];
 static size_t disc_sizes[2][50];
 static float disc_reference[2][48000];
+/* END (2) on a stream's final record, in the combinations the library decoder
+ * accepts: alone on an ordinary record (C0 2, C5-R4 2), and on an explicit RESET
+ * with DISCONTINUITY (C0 7, C5-R4 15) or without it (C0 3, C5-R4 11). The RESET
+ * forms need a stream whose last packet follows an explicit encoder reset. A
+ * record's PCM does not depend on its flags, so one reference serves each stream. */
+#define END_AT 49u
+static uint8_t tail_records[2][50][KENC_MAX_PACKET_BYTES];
+static size_t tail_sizes[2][50];
+static float tail_reference[2][48000];
 /* The last packet's wire metadata a completed stream reports. */
 static uint64_t expected_wire_pts = 1960u, expected_wire_epoch = 1u;
 /* Set: sources open through installed admission from this content root. */
 static const char *installed_root;
+
+/* Offset of a KMA2 record's flags byte: after the magic and four varints
+ * (profile, epoch, index, PTS). */
+static size_t flags_offset(const uint8_t *record, size_t size)
+{
+    size_t position = 4u;
+    for (unsigned int field = 0u; field < 4u; ++field) {
+        while (position < size && (record[position] & 128u) != 0u) ++position;
+        ++position;
+    }
+    if (position >= size) _exit(2);
+    return position;
+}
 
 static const char *temp_root(void)
 {
@@ -135,6 +157,94 @@ static void build_discontinuity(kenc_model *model, kenc_epoch_start profile)
     kenc_decoder_free(decoder); kenc_encoder_free(encoder);
 }
 
+static uint8_t reset_flags(kenc_epoch_start profile)
+{
+    return profile == KENC_EPOCH_START_C5_R4
+        ? KENC_PACKET_FLAG_RESET | KENC_PACKET_FLAG_EPOCH_PREROLL : KENC_PACKET_FLAG_RESET;
+}
+
+static bool is_end_mode(const char *mode)
+{
+    return !strcmp(mode, "end") || !strcmp(mode, "end-reset") || !strcmp(mode, "end-reset-discontinuity");
+}
+
+/* The flags an END mode finds on the final record, and the ones it writes. */
+static void end_flags(const char *mode, kenc_epoch_start profile, uint8_t *found, uint8_t *set)
+{
+    uint8_t reset = reset_flags(profile);
+    *found = !strcmp(mode, "end") ? 0u : reset | KENC_PACKET_FLAG_DISCONTINUITY;
+    *set = !strcmp(mode, "end") ? KENC_PACKET_FLAG_END
+        : !strcmp(mode, "end-reset") ? reset | KENC_PACKET_FLAG_END
+        : reset | KENC_PACKET_FLAG_DISCONTINUITY | KENC_PACKET_FLAG_END;
+}
+
+/* The library decoder is the oracle: after the first 49 records it accepts the
+ * final one carrying the mode's END flags and decodes it to `expected`. */
+static void check_end_accepted(kenc_model *model, kenc_epoch_start profile, const char *mode,
+    uint8_t (*stream)[KENC_MAX_PACKET_BYTES], const size_t *stream_sizes, const float *expected)
+{
+    kenc_decoder *decoder = NULL;
+    kenc_options options = kenc_options_default();
+    options.codebooks = file_info.codebooks; options.threads = 2u;
+    ASSERT_EQ_INT(kenc_decoder_create(&decoder, model, &options), KENC_OK);
+    ASSERT_EQ_INT(kenc_decoder_set_epoch_start(decoder, profile), KENC_OK);
+    int16_t decoded[KENC_PACKET_SAMPLES]; size_t count = 0u; kenc_packet_info info;
+    for (size_t i = 0u; i < END_AT; ++i) {
+        ASSERT_EQ_INT(kenc_decoder_pull_s16(decoder, stream[i], stream_sizes[i], decoded,
+            KENC_PACKET_SAMPLES, &count, NULL), KENC_OK);
+    }
+    uint8_t copy[KENC_MAX_PACKET_BYTES], found, set;
+    end_flags(mode, profile, &found, &set);
+    memcpy(copy, stream[END_AT], stream_sizes[END_AT]);
+    size_t at = flags_offset(copy, stream_sizes[END_AT]);
+    ASSERT_EQ_INT(copy[at], found);
+    copy[at] = set;
+    ASSERT_EQ_INT(kenc_decoder_pull_s16(decoder, copy, stream_sizes[END_AT], decoded,
+        KENC_PACKET_SAMPLES, &count, &info), KENC_OK);
+    ASSERT_EQ_INT(count, KENC_PACKET_SAMPLES);
+    ASSERT_EQ_INT(info.flags, set);
+    float last[KENC_PACKET_SAMPLES];
+    for (size_t j = 0u; j < KENC_PACKET_SAMPLES; ++j) last[j] = (float)decoded[j] / 32768.0f;
+    ASSERT_TRUE(memcmp(last, expected + END_AT * KENC_PACKET_SAMPLES, sizeof(last)) == 0);
+    kenc_decoder_free(decoder);
+}
+
+/* A stream whose last packet follows an explicit reset: RESET|DISCONTINUITY,
+ * at packet index 0 of a new epoch, with the pre-roll bit under C5-R4. */
+static void build_tail(kenc_model *model, kenc_epoch_start profile)
+{
+    kenc_encoder *encoder = NULL; kenc_decoder *decoder = NULL;
+    kenc_options options = kenc_options_default();
+    options.codebooks = file_info.codebooks; options.threads = 2u;
+    ASSERT_EQ_INT(kenc_encoder_create(&encoder, model, &options), KENC_OK);
+    ASSERT_EQ_INT(kenc_encoder_set_epoch_start(encoder, profile), KENC_OK);
+    ASSERT_EQ_INT(kenc_decoder_create(&decoder, model, &options), KENC_OK);
+    ASSERT_EQ_INT(kenc_decoder_set_epoch_start(decoder, profile), KENC_OK);
+    for (size_t i = 0u; i < 50u; ++i) {
+        int16_t pcm[KENC_PACKET_SAMPLES], decoded[KENC_PACKET_SAMPLES]; size_t count = 0u;
+        if (i == END_AT) kenc_encoder_reset(encoder);
+        for (size_t j = 0u; j < KENC_PACKET_SAMPLES; ++j) {
+            float value = reference[i * KENC_PACKET_SAMPLES + j] * 32768.0f;
+            pcm[j] = (int16_t)(value > 32767.0f ? 32767 : value < -32768.0f ? -32768 : (int)lrintf(value));
+        }
+        ASSERT_EQ_INT(kenc_encoder_push_s16(encoder, pcm, KENC_PACKET_SAMPLES, (uint64_t)i * 40u,
+            tail_records[profile][i], sizeof(tail_records[profile][i]), &tail_sizes[profile][i]), KENC_OK);
+        kenc_packet_metadata metadata = {0};
+        ASSERT_EQ_INT(kenc_packet_metadata_read(&metadata, tail_records[profile][i], tail_sizes[profile][i], &options), KENC_OK);
+        ASSERT_EQ_INT(metadata.packet.flags, i == END_AT ? reset_flags(profile) | KENC_PACKET_FLAG_DISCONTINUITY
+            : i == 0u || i == 25u ? reset_flags(profile) : 0u);
+        ASSERT_EQ_INT(kenc_decoder_pull_s16(decoder, tail_records[profile][i], tail_sizes[profile][i], decoded,
+            KENC_PACKET_SAMPLES, &count, NULL), KENC_OK);
+        ASSERT_EQ_INT(count, KENC_PACKET_SAMPLES);
+        for (size_t j = 0u; j < KENC_PACKET_SAMPLES; ++j) {
+            tail_reference[profile][i * KENC_PACKET_SAMPLES + j] = (float)decoded[j] / 32768.0f;
+        }
+    }
+    kenc_decoder_free(decoder); kenc_encoder_free(encoder);
+    check_end_accepted(model, profile, "end-reset", tail_records[profile], tail_sizes[profile], tail_reference[profile]);
+    check_end_accepted(model, profile, "end-reset-discontinuity", tail_records[profile], tail_sizes[profile], tail_reference[profile]);
+}
+
 static void build_c5(void)
 {
     kenc_model *model = NULL; kenc_encoder *encoder = NULL; kenc_decoder *decoder = NULL;
@@ -165,6 +275,10 @@ static void build_c5(void)
     decode_c5(model, 1u, c5_reference_one_thread);
     build_discontinuity(model, KENC_EPOCH_START_C0);
     build_discontinuity(model, KENC_EPOCH_START_C5_R4);
+    build_tail(model, KENC_EPOCH_START_C0);
+    build_tail(model, KENC_EPOCH_START_C5_R4);
+    check_end_accepted(model, KENC_EPOCH_START_C0, "end", records, sizes, reference);
+    check_end_accepted(model, KENC_EPOCH_START_C5_R4, "end", c5_records, c5_sizes, c5_reference);
     kenc_model_free(model);
 }
 
@@ -186,17 +300,12 @@ static void select_discontinuity(kenc_epoch_start profile)
     expected_wire_pts = DISC_PTS_JUMP + 49u * 40u; expected_wire_epoch = 2u;
 }
 
-/* Offset of a KMA2 record's flags byte: after the magic and four varints
- * (profile, epoch, index, PTS). */
-static size_t flags_offset(const uint8_t *record, size_t size)
+static void select_tail(kenc_epoch_start profile)
 {
-    size_t position = 4u;
-    for (unsigned int field = 0u; field < 4u; ++field) {
-        while (position < size && (record[position] & 128u) != 0u) ++position;
-        ++position;
-    }
-    if (position >= size) _exit(2);
-    return position;
+    select_stream(profile);
+    active_records = tail_records[profile]; active_sizes = tail_sizes[profile];
+    active_reference = tail_reference[profile];
+    expected_wire_epoch = 2u;
 }
 
 static KaEncodec *open_live(KaEncodecKind kind, const char *path, int fd, unsigned int threads)
@@ -265,6 +374,13 @@ static void producer(int fd, const char *mode)
             size_t at = flags_offset(copy, record_size);
             if (copy[at] != 0u) _exit(2);
             copy[at] = KENC_PACKET_FLAG_DISCONTINUITY;
+        }
+        /* END on the last record, which a decoder accepts and decodes. */
+        if (is_end_mode(mode) && i == END_AT) {
+            uint8_t found, set; end_flags(mode, stream_profile, &found, &set);
+            size_t at = flags_offset(copy, record_size);
+            if (copy[at] != found) _exit(2);
+            copy[at] = set;
         }
         /* Irregular physical fragments must not change packet PCM or metadata. */
         write_all(fd, copy, 3u); write_all(fd, copy + 3u, record_size - 3u);
@@ -354,7 +470,7 @@ static void pipe_case(const char *mode, unsigned int error)
 static void regular_stdin_case(void)
 {
     char path[PATH_MAX];
-    if (snprintf(path, sizeof(path), "%s/kalive-input-XXXXXX", temp_root()) >= (int)sizeof(path)) exit(2);
+    if (snprintf(path, sizeof(path), "%s/ka-in.XXXXXX", temp_root()) >= (int)sizeof(path)) exit(2);
     int fd = mkstemp(path);
     if (fd < 0 || unlink(path) != 0) exit(2);
     static const uint8_t ignored[] = "prefix to skip";
@@ -394,10 +510,10 @@ static void socket_case(bool private)
     printf("%ssocket %s\n", installed_root != NULL ? "installed " : "", private ? "private" : "public");
     fflush(stdout);
     char directory[PATH_MAX];
-    if (snprintf(directory, sizeof(directory), "%s/kalive-XXXXXX", temp_root()) >= (int)sizeof(directory)
+    if (snprintf(directory, sizeof(directory), "%s/ka.XXXXXX", temp_root()) >= (int)sizeof(directory)
         || !mkdtemp(directory)) exit(2);
     struct sockaddr_un address = {.sun_family = AF_UNIX};
-    int length = snprintf(address.sun_path, sizeof(address.sun_path), "%s/source", directory);
+    int length = snprintf(address.sun_path, sizeof(address.sun_path), "%s/s", directory);
     if (length < 0 || (size_t)length >= sizeof(address.sun_path)) {
         fprintf(stderr, "TMPDIR is too long for a Unix socket path: %s\n", directory);
         rmdir(directory); exit(2);
@@ -527,6 +643,16 @@ int main(int argc, char **argv)
     puts("discontinuity C5-R4"); select_discontinuity(KENC_EPOCH_START_C5_R4); pipe_case("normal", 0u);
     select_stream(KENC_EPOCH_START_C0); pipe_case("discontinuity-unreset", 5u);
     select_stream(KENC_EPOCH_START_C5_R4); pipe_case("discontinuity-unreset", 5u);
+    /* END (2) on the last record decodes exactly, alone and with RESET, with
+     * and without DISCONTINUITY; an Amp-side flag list must not refuse it. */
+    static const struct { const char *label; kenc_epoch_start profile; } profiles[] = {
+        {"C0", KENC_EPOCH_START_C0}, {"C5-R4", KENC_EPOCH_START_C5_R4}};
+    for (size_t i = 0u; i < sizeof(profiles) / sizeof(profiles[0]); ++i) {
+        printf("END %s\n", profiles[i].label);
+        select_stream(profiles[i].profile); pipe_case("end", 0u);
+        select_tail(profiles[i].profile);
+        pipe_case("end-reset", 0u); pipe_case("end-reset-discontinuity", 0u);
+    }
     select_stream(KENC_EPOCH_START_C0);
     if (strcmp(argv[3], "--development-only")) {
         setenv("KILIX_CONTENT_ROOT", argv[3], 1);

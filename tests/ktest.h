@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int kt_checks = 0;
 static int kt_failures = 0;
@@ -68,25 +70,58 @@ static inline int kt_summary(const char *suite)
     return kt_failures ? 1 : 0;
 }
 
-/* Temp dir helper: under $TMPDIR when set, so a sandboxed run stays inside
- * its sandbox; /tmp otherwise. */
+/* Temp dir helper: a short private directory under $TMPDIR when set, so a
+ * sandboxed run stays inside its sandbox; /tmp otherwise. The name is short
+ * and the full path is never truncated: a path that does not fit is an error,
+ * not a different directory. */
 static inline char *kt_tmpdir(void)
 {
     const char *root = getenv("TMPDIR");
     if (root == NULL || root[0] == '\0')
         root = "/tmp";
-    size_t size = strlen(root) + sizeof("/kilixamp_test_XXXXXX");
+    size_t size = strlen(root) + sizeof("/kt.XXXXXX");
     char *copy = malloc(size);
     if (copy == NULL) {
         perror("malloc");
         exit(1);
     }
-    snprintf(copy, size, "%s/kilixamp_test_XXXXXX", root);
+    snprintf(copy, size, "%s/kt.XXXXXX", root);
     if (!mkdtemp(copy)) {
         perror("mkdtemp");
         exit(1);
     }
     return copy;
+}
+
+/* A path handed to something that copies it into sockaddr_un.sun_path (108
+ * bytes) must fit, or the copy names a different file. */
+#define KT_PATH_CAP 108
+
+static int kt_entered;
+
+/* Makes `dir` the working directory, so kt_path() can fall back to a name
+ * relative to it when TMPDIR is too long for an absolute socket path. */
+static inline void kt_enter(const char *dir)
+{
+    if (chdir(dir) != 0) {
+        perror("chdir");
+        exit(1);
+    }
+    kt_entered = 1;
+}
+
+/* "<dir>/<name>" when it fits in `cap`, else "<name>" relative to the entered
+ * directory. It never truncates and never leaves `dir`. */
+static inline void kt_path(char *out, size_t cap, const char *dir, const char *name)
+{
+    int n = snprintf(out, cap, "%s/%s", dir, name);
+    if (n >= 0 && (size_t)n < cap)
+        return;
+    n = snprintf(out, cap, "%s", name);
+    if (!kt_entered || n < 0 || (size_t)n >= cap) {
+        fprintf(stderr, "kt_path: cannot place %s under %s\n", name, dir);
+        exit(1);
+    }
 }
 
 #endif

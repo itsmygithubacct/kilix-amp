@@ -32,7 +32,9 @@ static int client_connect(const char *path)
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    if (strlen(path) >= sizeof(addr.sun_path))
+        return -1;
+    memcpy(addr.sun_path, path, strlen(path));
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0)
         return -1;
@@ -64,7 +66,7 @@ static const char *read_line(int fd)
 
 static ControlServer *listen_at(const char *name, char *path, size_t n)
 {
-    snprintf(path, n, "%s/%s", g_dir, name);
+    kt_path(path, n, g_dir, name);
     char err[512] = {0};
     ControlServer *cs = control_listen(path, err, sizeof(err));
     if (!cs)
@@ -74,7 +76,7 @@ static ControlServer *listen_at(const char *name, char *path, size_t n)
 
 static void test_round_trip(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("rt.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -96,7 +98,7 @@ static void test_round_trip(void)
  * but the framing must not depend on that. */
 static void test_multiple_requests_one_connection(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("multi.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -119,7 +121,7 @@ static void test_multiple_requests_one_connection(void)
 /* A request split across reads is still one request. */
 static void test_partial_request(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("partial.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -141,7 +143,7 @@ static void test_partial_request(void)
 /* CRLF from a line-oriented peer is tolerated. */
 static void test_crlf(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("crlf.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -163,7 +165,7 @@ static void test_crlf(void)
  * protocol version so a mismatched client can say so instead of guessing. */
 static void test_malformed_is_answered_not_dispatched(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("bad.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -188,7 +190,7 @@ static void test_malformed_is_answered_not_dispatched(void)
 
 static void test_v2_command_shape_has_structured_errors(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("v2-command.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs) return;
@@ -212,7 +214,7 @@ static void test_v2_command_shape_has_structured_errors(void)
 /* An oversized line is refused with a reply, and the connection recovers. */
 static void test_request_too_long(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("big.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -247,7 +249,7 @@ static void test_request_too_long(void)
 /* A connection that says nothing is dropped rather than holding a slot. */
 static void test_idle_client_dropped(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("idle.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -265,7 +267,7 @@ static void test_idle_client_dropped(void)
 
 static void test_socket_is_owner_only(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("mode.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -281,14 +283,15 @@ static void test_socket_is_owner_only(void)
 /* Startup must never delete by pathname after inspecting a stale socket. */
 static void test_stale_socket_is_preserved(void)
 {
-    char path[96];
-    snprintf(path, sizeof(path), "%s/stale.sock", g_dir);
+    char path[KT_PATH_CAP];
+    kt_path(path, sizeof(path), g_dir, "stale.sock");
 
     /* What a SIGKILL leaves behind: the file is there, nobody is accepting. */
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    ASSERT_TRUE(strlen(path) < sizeof(addr.sun_path));
+    memcpy(addr.sun_path, path, strlen(path));
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     ASSERT_TRUE(fd >= 0);
     ASSERT_EQ_INT(bind(fd, (struct sockaddr *)&addr, sizeof(addr)), 0);
@@ -317,8 +320,8 @@ static void test_stale_socket_is_preserved(void)
 /* A user-provided --socket path must never act as an arbitrary unlink. */
 static void test_non_socket_path_is_preserved(void)
 {
-    char path[96];
-    snprintf(path, sizeof(path), "%s/keep.txt", g_dir);
+    char path[KT_PATH_CAP];
+    kt_path(path, sizeof(path), g_dir, "keep.txt");
     FILE *f = fopen(path, "w");
     ASSERT_TRUE(f != NULL);
     if (!f)
@@ -346,9 +349,9 @@ static void test_null_socket_path_is_refused(void)
 
 static void test_symlink_socket_path_is_preserved(void)
 {
-    char target[96], path[96];
-    snprintf(target, sizeof(target), "%s/target.txt", g_dir);
-    snprintf(path, sizeof(path), "%s/link.sock", g_dir);
+    char target[KT_PATH_CAP], path[KT_PATH_CAP];
+    kt_path(target, sizeof(target), g_dir, "target.txt");
+    kt_path(path, sizeof(path), g_dir, "link.sock");
     FILE *f = fopen(target, "w");
     ASSERT_TRUE(f != NULL);
     if (!f)
@@ -372,7 +375,7 @@ static void test_symlink_socket_path_is_preserved(void)
 /* Shutdown must not unlink a path that was swapped after startup. */
 static void test_replaced_socket_path_is_preserved_on_close(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("replaced.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -396,7 +399,7 @@ static void test_replaced_socket_path_is_preserved_on_close(void)
 /* Two backends on one socket would fight over the audio device. */
 static void test_second_listener_refused(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("dup.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs)
@@ -440,7 +443,7 @@ static void test_default_socket_path(void)
 
 static void test_explicit_versions_and_complete_requests(void)
 {
-    char path[96];
+    char path[KT_PATH_CAP];
     ControlServer *cs = listen_at("versions.sock", path, sizeof(path));
     ASSERT_TRUE(cs != NULL);
     if (!cs) return;
@@ -474,6 +477,7 @@ static void test_explicit_versions_and_complete_requests(void)
 int main(void)
 {
     g_dir = kt_tmpdir();
+    kt_enter(g_dir);
     RUN(test_round_trip);
     RUN(test_multiple_requests_one_connection);
     RUN(test_partial_request);
