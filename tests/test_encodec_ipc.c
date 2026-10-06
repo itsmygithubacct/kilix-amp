@@ -78,6 +78,12 @@ static int fixture_peer(void)
     if (!strcmp(mode, "fd-privacy")) {
         for (int fd = 4; fd < 128; ++fd) if (fcntl(fd, F_GETFD) >= 0) response.reserved = 1u;
     }
+    if (!strcmp(mode, "pcm-before-ready")) {
+        /* Well-formed PCM, but no READY has selected the stream yet. */
+        response.kind = 11u; response.bytes = 960u * sizeof(float);
+        transmit(&response, pcm, false);
+        for (;;) pause();
+    }
     transmit(&response, NULL, !strcmp(mode, "surplus-fd"));
     if (!strncmp(mode, "seek-", 5)) {
         if (poll(&channel, 1u, 5000) <= 0) return 2;
@@ -132,7 +138,8 @@ static void test_refusals(void)
 {
     const char *modes[] = {"magic", "version", "future", "reserved", "rate", "duration",
         "initial-position", "uncanonical-error", "surplus-fd", "duplicate-ready", "nonfinite",
-        "discontinuous", "odd-pcm", "oversize", "early-end", "seek-position", "seek-metadata"};
+        "discontinuous", "odd-pcm", "oversize", "early-end", "seek-position", "seek-metadata",
+        "pcm-before-ready"};
     for (size_t i = 0u; i < sizeof(modes) / sizeof(modes[0]); ++i) {
         KaEncodec *source = ka_encodec_open(modes[i], "", "", 1u);
         ASSERT_TRUE(source && !ka_encodec_info(source).failed);

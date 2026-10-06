@@ -68,11 +68,20 @@ static inline int kt_summary(const char *suite)
     return kt_failures ? 1 : 0;
 }
 
-/* Temp dir helper */
+/* Temp dir helper: under $TMPDIR when set, so a sandboxed run stays inside
+ * its sandbox; /tmp otherwise. */
 static inline char *kt_tmpdir(void)
 {
-    static char tmpl[] = "/tmp/kilixamp_test_XXXXXX";
-    char *copy = strdup(tmpl);
+    const char *root = getenv("TMPDIR");
+    if (root == NULL || root[0] == '\0')
+        root = "/tmp";
+    size_t size = strlen(root) + sizeof("/kilixamp_test_XXXXXX");
+    char *copy = malloc(size);
+    if (copy == NULL) {
+        perror("malloc");
+        exit(1);
+    }
+    snprintf(copy, size, "%s/kilixamp_test_XXXXXX", root);
     if (!mkdtemp(copy)) {
         perror("mkdtemp");
         exit(1);
