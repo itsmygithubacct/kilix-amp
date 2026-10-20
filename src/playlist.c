@@ -247,7 +247,23 @@ static void push_track(Playlist *pl, Track t)
 
 void playlist_add_file(Playlist *pl, const char *filepath)
 {
-    if (!ka_is_file(filepath) || !playlist_is_audio_ext(filepath))
+    if (!ka_is_file(filepath))
+        return;
+    /* All entry points (Open/Add, CLI and the control socket) accept playlists,
+     * just as dropping a playlist into the playlist window does. */
+    char *ext = ka_ext_lower(filepath);
+    bool m3u = strcmp(ext, ".m3u") == 0 || strcmp(ext, ".m3u8") == 0;
+    bool pls = strcmp(ext, ".pls") == 0;
+    free(ext);
+    if (m3u) {
+        playlist_load_m3u(pl, filepath);
+        return;
+    }
+    if (pls) {
+        playlist_load_pls(pl, filepath);
+        return;
+    }
+    if (!playlist_is_audio_ext(filepath))
         return;
     push_track(pl, track_make(filepath, NULL, -1));
     if (pl->shuffle)
@@ -268,11 +284,7 @@ void playlist_add_live(Playlist *pl, const char *path, KaEncodecKind kind)
 void playlist_add_files(Playlist *pl, const char **files, int n)
 {
     for (int i = 0; i < n; i++)
-        if (playlist_is_audio_ext(files[i]) && ka_is_file(files[i]))
-            push_track(pl, track_make(files[i], NULL, -1));
-    if (pl->shuffle)
-        generate_shuffle_order(pl);
-    emit_changed(pl);
+        playlist_add_file(pl, files[i]);
 }
 
 static int cmp_str(const void *a, const void *b)

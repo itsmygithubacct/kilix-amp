@@ -46,6 +46,49 @@ static void test_add_file(void)
     playlist_free(pl);
 }
 
+static void test_open_playlist_files(void)
+{
+    char *first = make_audio_file("open-first.mp3");
+    char *second = make_audio_file("open-second.mp3");
+    const char *names[] = {"open.m3u", "open.M3U8", "open.PLS"};
+    for (int i = 0; i < 3; ++i) {
+        char *path = ka_path_join(g_dir, names[i]);
+        FILE *f = fopen(path, "w");
+        if (i == 2)
+            fputs("[playlist]\nFile1=open-first.mp3\nFile2=open-second.mp3\nNumberOfEntries=2\n", f);
+        else
+            fputs("#EXTM3U\n#EXTINF:12,Opening chapter\nopen-first.mp3\nopen-second.mp3\n", f);
+        fclose(f);
+        Playlist *pl = playlist_new();
+        /* CLI/headless startup use the single-file path. */
+        playlist_add_file(pl, path);
+        ASSERT_EQ_INT(playlist_count(pl), 2);
+        if (playlist_count(pl) == 2) {
+            ASSERT_STR_EQ(playlist_track(pl, 0)->filepath, first);
+            ASSERT_STR_EQ(playlist_track(pl, 1)->filepath, second);
+            if (i != 2) {
+                ASSERT_STR_EQ(playlist_track(pl, 0)->title, "Opening chapter");
+                ASSERT_EQ_INT(playlist_track(pl, 0)->duration, 12);
+            }
+        }
+        playlist_clear(pl);
+        /* Open/Add dialogs use the multiple-file path: retain input order. */
+        const char *files[] = {second, path, first};
+        playlist_add_files(pl, files, 3);
+        ASSERT_EQ_INT(playlist_count(pl), 4);
+        if (playlist_count(pl) == 4) {
+            ASSERT_STR_EQ(playlist_track(pl, 0)->filepath, second);
+            ASSERT_STR_EQ(playlist_track(pl, 1)->filepath, first);
+            ASSERT_STR_EQ(playlist_track(pl, 2)->filepath, second);
+            ASSERT_STR_EQ(playlist_track(pl, 3)->filepath, first);
+        }
+        playlist_free(pl);
+        free(path);
+    }
+    free(first);
+    free(second);
+}
+
 static void test_remove(void)
 {
     char *paths[3];
@@ -414,6 +457,7 @@ int main(void)
 {
     g_dir = kt_tmpdir();
     RUN(test_add_file);
+    RUN(test_open_playlist_files);
     RUN(test_remove);
     RUN(test_navigation);
     RUN(test_repeat_all);

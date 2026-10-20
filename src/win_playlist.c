@@ -541,12 +541,5 @@ void playlist_window_drop(PlaylistWindow *pw, const char *path)
         playlist_add_directory(pw->playlist, path, true);
         return;
     }
-    char *ext = ka_ext_lower(path);
-    if (strcmp(ext, ".m3u") == 0 || strcmp(ext, ".m3u8") == 0)
-        playlist_load_m3u(pw->playlist, path);
-    else if (strcmp(ext, ".pls") == 0)
-        playlist_load_pls(pw->playlist, path);
-    else
-        playlist_add_file(pw->playlist, path);
-    free(ext);
+    playlist_add_file(pw->playlist, path);
 }
