@@ -27,7 +27,8 @@ bool playlist_is_audio_ext(const char *path)
 static Track track_make(const char *filepath, const char *title, int duration)
 {
     Track t = {0};
-    t.filepath = ka_strdup(filepath);
+    t.filepath = realpath(filepath, NULL);
+    if (!t.filepath) t.filepath = ka_strdup(filepath);
     t.title = (title && *title) ? ka_strdup(title) : ka_stem(filepath);
     t.artist = ka_strdup("");
     t.album = ka_strdup("");
@@ -78,7 +79,32 @@ struct Playlist {
     PlaylistChangedFn on_changed;
     PlaylistCurrentFn on_current;
     void *ud;
+    PlaylistRemoteFn remote;
+    void *remote_ud;
 };
+
+void playlist_set_remote(Playlist *pl, PlaylistRemoteFn sink, void *ud)
+{
+    pl->remote = sink;
+    pl->remote_ud = ud;
+}
+
+static bool remote_edit(Playlist *pl, const char *cmd, const char *key, const char *value)
+{
+    if (!pl->remote) return false;
+    JsonBuf request = {0};
+    json_obj_begin(&request);
+    json_kv_str(&request, "cmd", cmd);
+    if (key) {
+        char *absolute = strcmp(key, "path") == 0 ? realpath(value, NULL) : NULL;
+        json_kv_str(&request, key, absolute ? absolute : value);
+        free(absolute);
+    }
+    /* Sink adds the revision and closes the request object. */
+    pl->remote(pl->remote_ud, &request);
+    json_free(&request);
+    return true;
+}
 
 static void emit_changed(Playlist *pl)
 {
@@ -245,8 +271,56 @@ static void push_track(Playlist *pl, Track t)
     pl->tracks[pl->count++] = t;
 }
 
+bool playlist_apply_snapshot(Playlist *pl, const char *reply)
+{
+    char *array = json_get_raw(reply, "tracks");
+    long long count = -1, index = -1;
+    if (!array || array[0] != '[' || !json_get_int(reply, "count", &count) || count < 0) {
+        free(array);
+        return false;
+    }
+    Playlist *replacement = playlist_new();
+    const char *cursor = array;
+    char *entry;
+    while ((entry = json_array_next(&cursor))) {
+        char path[4096], title[1024] = "", artist[1024] = "", album[1024] = "";
+        long long duration = -1, kind = KA_ENCODEC_FILE;
+        bool valid = json_get_str(entry, "file", path, sizeof(path)) && *path;
+        json_get_str(entry, "title", title, sizeof(title));
+        json_get_str(entry, "artist", artist, sizeof(artist));
+        json_get_str(entry, "album", album, sizeof(album));
+        json_get_int(entry, "duration", &duration);
+        json_get_int(entry, "source_kind", &kind);
+        free(entry);
+        if (kind < KA_ENCODEC_FILE || kind > KA_ENCODEC_SOCKET) valid = false;
+        if (!valid) { playlist_free(replacement); free(array); return false; }
+        Track t = track_make(path, title, (int)KA_CLAMP(duration, -1, INT32_MAX));
+        t.source_kind = (KaEncodecKind)kind;
+        free(t.artist); free(t.album);
+        t.artist = ka_strdup(artist); t.album = ka_strdup(album);
+        push_track(replacement, t);
+    }
+    free(array);
+    if (replacement->count != count) { playlist_free(replacement); return false; }
+    json_get_int(reply, "index", &index);
+    for (int i = 0; i < pl->count; i++) track_destroy(&pl->tracks[i]);
+    free(pl->tracks); free(pl->shuffle_order);
+    pl->tracks = replacement->tracks;
+    pl->count = replacement->count;
+    pl->cap = replacement->cap;
+    pl->current_index = index >= 0 && index < count ? (int)index : -1;
+    pl->shuffle_order = NULL;
+    replacement->tracks = NULL;
+    replacement->count = 0;
+    playlist_free(replacement);
+    emit_changed(pl);
+    emit_current(pl);
+    return true;
+}
+
 void playlist_add_file(Playlist *pl, const char *filepath)
 {
+    if (remote_edit(pl, "add", "path", filepath)) return;
     if (!ka_is_file(filepath))
         return;
     /* All entry points (Open/Add, CLI and the control socket) accept playlists,
@@ -283,6 +357,10 @@ void playlist_add_live(Playlist *pl, const char *path, KaEncodecKind kind)
 
 void playlist_add_files(Playlist *pl, const char **files, int n)
 {
+    if (pl->remote) {
+        for (int i = 0; i < n; i++) remote_edit(pl, "add", "path", files[i]);
+        return;
+    }
     for (int i = 0; i < n; i++)
         playlist_add_file(pl, files[i]);
 }
@@ -355,6 +433,7 @@ static void add_dir_recursive(Playlist *pl, const char *dirpath)
 
 void playlist_add_directory(Playlist *pl, const char *dirpath, bool recursive)
 {
+    if (remote_edit(pl, "add", "path", dirpath)) return;
     if (recursive) {
         add_dir_recursive(pl, dirpath);
     } else {
@@ -381,6 +460,17 @@ static int cmp_int_desc(const void *a, const void *b)
 
 void playlist_remove(Playlist *pl, const int *indices, int n)
 {
+    if (pl->remote) {
+        JsonBuf j = {0};
+        json_obj_begin(&j);
+        json_kv_str(&j, "cmd", "remove");
+        json_arr_begin(&j, "indices");
+        for (int i = 0; i < n; i++) json_arr_int(&j, indices[i]);
+        json_arr_end(&j);
+        pl->remote(pl->remote_ud, &j);
+        json_free(&j);
+        return;
+    }
     int *sorted = malloc(sizeof(int) * (size_t)KA_MAX(n, 1));
     if (!sorted)
         abort();
@@ -388,6 +478,7 @@ void playlist_remove(Playlist *pl, const int *indices, int n)
     qsort(sorted, (size_t)n, sizeof(int), cmp_int_desc);
     for (int k = 0; k < n; k++) {
         int idx = sorted[k];
+        if (k > 0 && idx == sorted[k - 1]) continue;
         if (idx < 0 || idx >= pl->count)
             continue;
         track_destroy(&pl->tracks[idx]);
@@ -407,6 +498,7 @@ void playlist_remove(Playlist *pl, const int *indices, int n)
 
 void playlist_clear(Playlist *pl)
 {
+    if (remote_edit(pl, "clear", NULL, NULL)) return;
     for (int i = 0; i < pl->count; i++)
         track_destroy(&pl->tracks[i]);
     pl->count = 0;
@@ -419,6 +511,16 @@ void playlist_clear(Playlist *pl)
 
 void playlist_move(Playlist *pl, int from_idx, int to_idx)
 {
+    if (pl->remote) {
+        JsonBuf j = {0};
+        json_obj_begin(&j);
+        json_kv_str(&j, "cmd", "move");
+        json_kv_int(&j, "from", from_idx);
+        json_kv_int(&j, "to", to_idx);
+        pl->remote(pl->remote_ud, &j);
+        json_free(&j);
+        return;
+    }
     if (from_idx < 0 || from_idx >= pl->count)
         return;
     to_idx = KA_CLAMP(to_idx, 0, pl->count - 1);
@@ -537,26 +639,36 @@ static int cmp_by_path(const void *a, const void *b)
                       ((const Track *)b)->filepath);
 }
 
-/* Like the original, the numeric current_index is left as-is after a sort. */
+/* Keep the playing track, including duplicate paths, attached to its entry. */
 static void sort_tracks(Playlist *pl, int (*cmp)(const void *, const void *))
 {
+    Track *current = playlist_current_track(pl);
+    char *identity = current ? current->filepath : NULL;
     qsort(pl->tracks, (size_t)pl->count, sizeof(Track), cmp);
+    for (int i = 0; identity && i < pl->count; i++)
+        if (pl->tracks[i].filepath == identity) pl->current_index = i;
+    if (pl->shuffle) generate_shuffle_order(pl);
     emit_changed(pl);
+    emit_current(pl);
 }
 
-void playlist_sort_by_filename(Playlist *pl) { sort_tracks(pl, cmp_by_filename); }
-void playlist_sort_by_title(Playlist *pl) { sort_tracks(pl, cmp_by_title); }
-void playlist_sort_by_duration(Playlist *pl) { sort_tracks(pl, cmp_by_duration); }
-void playlist_sort_by_path(Playlist *pl) { sort_tracks(pl, cmp_by_path); }
+void playlist_sort_by_filename(Playlist *pl) { if (!remote_edit(pl, "sort", "by", "filename")) sort_tracks(pl, cmp_by_filename); }
+void playlist_sort_by_title(Playlist *pl) { if (!remote_edit(pl, "sort", "by", "title")) sort_tracks(pl, cmp_by_title); }
+void playlist_sort_by_duration(Playlist *pl) { if (!remote_edit(pl, "sort", "by", "duration")) sort_tracks(pl, cmp_by_duration); }
+void playlist_sort_by_path(Playlist *pl) { if (!remote_edit(pl, "sort", "by", "path")) sort_tracks(pl, cmp_by_path); }
 
 void playlist_reverse(Playlist *pl)
 {
+    if (remote_edit(pl, "reverse", NULL, NULL)) return;
     for (int i = 0, j = pl->count - 1; i < j; i++, j--) {
         Track t = pl->tracks[i];
         pl->tracks[i] = pl->tracks[j];
         pl->tracks[j] = t;
     }
+    if (pl->current_index >= 0) pl->current_index = pl->count - 1 - pl->current_index;
+    if (pl->shuffle) generate_shuffle_order(pl);
     emit_changed(pl);
+    emit_current(pl);
 }
 
 /* --- M3U / PLS --- */
@@ -590,6 +702,7 @@ static char *resolve_path(const char *basedir, const char *entry)
 
 void playlist_load_m3u(Playlist *pl, const char *filepath)
 {
+    if (remote_edit(pl, "add", "path", filepath)) return;
     char *data = ka_read_file(filepath, NULL);
     if (!data)
         return;
@@ -683,6 +796,7 @@ static int cmp_pls(const void *a, const void *b)
 
 void playlist_load_pls(Playlist *pl, const char *filepath)
 {
+    if (remote_edit(pl, "add", "path", filepath)) return;
     char *data = ka_read_file(filepath, NULL);
     if (!data)
         return;

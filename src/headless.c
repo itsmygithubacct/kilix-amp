@@ -23,11 +23,16 @@ typedef struct {
     bool running;
     char title[512];
     int volume;
+    int balance;
+    double preamp;
+    bool eq_enabled;
+    float eq[10], spectrum[AUDIO_SPECTRUM_BANDS];
+    char last_error[512];
+    long long revision;
     /* Loading is deferred to the next tick exactly as the windowed player
      * defers it: opening a file can take real time (a MIDI render most of
      * all), and a reply must not wait on the decoder. */
     bool pending_play, pending_pause;
-    int pending_index;
     /* Stops an all-unplayable playlist from skipping forever under repeat. */
     int auto_skip_count;
     int reply_protocol;
@@ -62,9 +67,10 @@ static bool hl_queue_current(Headless *h)
         track = playlist_set_current(h->playlist, 0);
     if (!track)
         return false;
-    h->pending_index = playlist_current_index(h->playlist);
+
     h->pending_play = true;
     h->pending_pause = false;
+    h->last_error[0] = 0;
     hl_set_title_from_track(h, track);
     return true;
 }
@@ -74,9 +80,10 @@ static bool hl_queue_index(Headless *h, int index)
     Track *track = playlist_set_current(h->playlist, index);
     if (!track)
         return false;
-    h->pending_index = index;
+
     h->pending_play = true;
     h->pending_pause = false;
+    h->last_error[0] = 0;
     hl_set_title_from_track(h, track);
     return true;
 }
@@ -86,7 +93,7 @@ static void hl_play_pending(Headless *h)
     if (!h->pending_play)
         return;
     h->pending_play = false;
-    Track *track = playlist_set_current(h->playlist, h->pending_index);
+    Track *track = playlist_current_track(h->playlist);
     if (!track)
         return;
     if (track->source_kind == KA_ENCODEC_FILE) audio_load(h->audio, track->filepath);
@@ -99,8 +106,10 @@ static void hl_play_pending(Headless *h)
 static void hl_resume_or_play(Headless *h)
 {
     if (h->pending_play) { h->pending_pause = false; return; }
-    if (strcmp(audio_state(h->audio), "paused") == 0)
-        audio_pause(h->audio); /* audio_pause toggles */
+    if (strcmp(audio_state(h->audio), "paused") == 0
+        || strcmp(audio_state(h->audio), "loading") == 0
+        || strcmp(audio_state(h->audio), "buffering") == 0)
+        audio_set_paused(h->audio, false);
     else if (strcmp(audio_state(h->audio), "stopped") == 0)
         hl_queue_current(h);
 }
@@ -124,8 +133,9 @@ static void on_eos(void *ud)
     if (audio_source_info(h->audio).live) return; /* Reconnect is an explicit user action. */
     Track *track = playlist_next_track(h->playlist);
     if (track) {
-        h->pending_index = playlist_current_index(h->playlist);
+
         h->pending_play = true;
+        h->pending_pause = false;
         hl_set_title_from_track(h, track);
     }
 }
@@ -134,6 +144,7 @@ static void on_error(void *ud, const char *msg)
 {
     Headless *h = ud;
     fprintf(stderr, "kilix-amp: %s\n", msg);
+    snprintf(h->last_error, sizeof(h->last_error), "%s", msg);
     if (audio_source_info(h->audio).live) return;
     if (h->auto_skip_count >= playlist_count(h->playlist)) {
         h->auto_skip_count = 0;
@@ -142,8 +153,9 @@ static void on_error(void *ud, const char *msg)
     h->auto_skip_count++;
     Track *track = playlist_next_track(h->playlist);
     if (track) {
-        h->pending_index = playlist_current_index(h->playlist);
+
         h->pending_play = true;
+        h->pending_pause = false;
         hl_set_title_from_track(h, track);
     } else {
         h->auto_skip_count = 0;
@@ -154,7 +166,7 @@ static void on_state_changed(void *ud, const char *state)
 {
     Headless *h = ud;
     if (strcmp(state, "playing") == 0)
-        h->auto_skip_count = 0;
+        h->last_error[0] = 0;
 }
 
 static void on_tags(void *ud, const AudioTags *tags)
@@ -163,11 +175,13 @@ static void on_tags(void *ud, const AudioTags *tags)
     Track *track = playlist_current_track(h->playlist);
     if (!track)
         return;
-    if (tags->title[0]) {
+    if (tags->title[0] && strcmp(track->title, tags->title) != 0) {
+        h->revision++;
         free(track->title);
         track->title = ka_strdup(tags->title);
     }
-    if (tags->artist[0]) {
+    if (tags->artist[0] && strcmp(track->artist, tags->artist) != 0) {
+        h->revision++;
         free(track->artist);
         track->artist = ka_strdup(tags->artist);
     }
@@ -175,6 +189,26 @@ static void on_tags(void *ud, const AudioTags *tags)
     track->sample_rate = tags->sample_rate;
     track->channels = tags->channels == 1 ? 1 : 2;
     hl_set_title_from_track(h, track);
+}
+
+static void on_playlist_change(void *ud) { ((Headless *)ud)->revision++; }
+
+static void on_spectrum(void *ud, const float *values, int n)
+{
+    Headless *h = ud;
+    memcpy(h->spectrum, values, sizeof(float) * (size_t)KA_MIN(n, AUDIO_SPECTRUM_BANDS));
+}
+
+static void on_position(void *ud, int pos, int duration)
+{
+    Headless *h = ud;
+    if (pos > 0 && strcmp(audio_state(h->audio), "playing") == 0)
+        h->auto_skip_count = 0;
+    Track *t = playlist_current_track(h->playlist);
+    if (t && duration > 0 && t->duration != duration / 1000) {
+        t->duration = duration / 1000;
+        h->revision++;
+    }
 }
 
 /* --- Protocol --- */
@@ -198,7 +232,7 @@ static void hl_write_status(Headless *h, JsonBuf *reply)
         file = NULL; info = (AudioSourceInfo){0}; pos_ms = dur_ms = 0;
     }
     if (h->reply_protocol == 2 && h->pending_play) {
-        Track *pending = playlist_track(h->playlist, h->pending_index);
+        Track *pending = playlist_current_track(h->playlist);
         if (pending) {
             file = pending->filepath;
             info = (AudioSourceInfo){0};
@@ -221,6 +255,23 @@ static void hl_write_status(Headless *h, JsonBuf *reply)
     json_kv_int(reply, "volume", h->volume);
     json_kv_bool(reply, "shuffle", playlist_shuffle(h->playlist));
     json_kv_int(reply, "repeat", playlist_repeat(h->playlist));
+    json_kv_str(reply, "backend", info.encodec ? "native-encodec" : "kilix-mpv");
+    json_kv_int(reply, "service", 2);
+    json_kv_int(reply, "pid", getpid());
+    json_kv_int(reply, "queue_revision", h->revision);
+    json_kv_int(reply, "balance", h->balance);
+    json_kv_num(reply, "preamp", h->preamp);
+    json_kv_bool(reply, "eq_enabled", h->eq_enabled);
+    json_kv_str(reply, "last_error", h->last_error);
+    json_arr_begin(reply, "eq");
+    for (int i = 0; i < 10; i++) json_arr_num(reply, h->eq[i]);
+    json_arr_end(reply);
+    json_arr_begin(reply, "spectrum");
+    for (int i = 0; i < AUDIO_SPECTRUM_BANDS; i++) json_arr_num(reply, h->spectrum[i]);
+    json_arr_end(reply);
+    Track *track = playlist_current_track(h->playlist);
+    json_kv_str(reply, "track_title", track ? track->title : "");
+    json_kv_str(reply, "artist", track ? track->artist : "");
     if (h->reply_protocol == 2) {
         const char *kind = info.source_kind == KA_ENCODEC_STDIN ? "encodec-stdin"
             : info.source_kind == KA_ENCODEC_SOCKET ? "encodec-unix" : "file";
@@ -267,7 +318,7 @@ static void hl_refuse(Headless *h, JsonBuf *reply, const char *code, const char 
     }
 }
 
-static void hl_write_playlist(Headless *h, JsonBuf *reply)
+static void hl_write_playlist(Headless *h, JsonBuf *reply, bool with_status)
 {
     json_arr_begin(reply, "items");
     int count = playlist_count(h->playlist);
@@ -276,8 +327,24 @@ static void hl_write_playlist(Headless *h, JsonBuf *reply)
         json_arr_str(reply, track && track->filepath ? track->filepath : "");
     }
     json_arr_end(reply);
-    json_kv_int(reply, "index", playlist_current_index(h->playlist));
-    json_kv_int(reply, "count", count);
+    if (!with_status) {
+        json_kv_int(reply, "index", playlist_current_index(h->playlist));
+        json_kv_int(reply, "count", count);
+        json_kv_int(reply, "queue_revision", h->revision);
+    }
+    json_arr_begin(reply, "tracks");
+    for (int i = 0; i < count; i++) {
+        Track *t = playlist_track(h->playlist, i);
+        json_obj_begin(reply);
+        json_kv_str(reply, "file", t->filepath);
+        json_kv_str(reply, "title", t->title);
+        json_kv_str(reply, "artist", t->artist);
+        json_kv_str(reply, "album", t->album);
+        json_kv_int(reply, "duration", t->duration);
+        json_kv_int(reply, "source_kind", t->source_kind);
+        json_obj_end(reply);
+    }
+    json_arr_end(reply);
 }
 
 static void hl_handle(void *ud, const char *cmd, const char *request,
@@ -292,7 +359,7 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
     h->reply_protocol = (int)protocol;
     bool live_source = audio_source_info(h->audio).live;
     if (h->pending_play) {
-        Track *pending = playlist_track(h->playlist, h->pending_index);
+        Track *pending = playlist_current_track(h->playlist);
         if (pending) live_source = pending->source_kind != KA_ENCODEC_FILE;
     }
     if (protocol == 1 && live_source
@@ -302,14 +369,23 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
 
     /* Optional fields have to be correctly typed when present; they must not
      * accidentally select the no-argument toggle/resume behavior. */
-    const char *integers[] = {"index", "level", "mode"};
-    for (size_t i = 0u; i < 3u; ++i) {
+    const char *integers[] = {"index", "level", "mode", "queue_revision", "band", "from", "to"};
+    for (size_t i = 0u; i < KA_LEN(integers); ++i) {
         if (json_has_key(request, integers[i]) && !json_get_int(request, integers[i], &number)) {
             hl_refuse(h, reply, "INVALID_REQUEST", "integer argument has the wrong type"); return;
         }
     }
     if (json_has_key(request, "on") && !json_get_bool(request, "on", &flag)) {
         hl_refuse(h, reply, "INVALID_REQUEST", "on must be boolean"); return;
+    }
+
+    /* An old selection must never address a different track after another
+     * controller reorders the queue. Legacy clients may omit the revision. */
+    long long revision;
+    if (json_get_int(request, "queue_revision", &revision) && revision != h->revision) {
+        hl_refuse(h, reply, "STALE_QUEUE", "playlist changed; refresh and try again");
+        hl_write_status(h, reply);
+        return;
     }
 
     if (strcmp(cmd, "ping") == 0) {
@@ -324,6 +400,9 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
             json_kv_bool(reply, "live_sources", false);
 #endif
         }
+        json_kv_str(reply, "backend", "kilix-mpv");
+        json_kv_int(reply, "service", 2);
+        json_kv_bool(reply, "shared_playback", true);
         return;
     }
     if (strcmp(cmd, "state") == 0) {
@@ -333,7 +412,13 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
     }
     if (strcmp(cmd, "playlist") == 0) {
         json_kv_bool(reply, "ok", true);
-        hl_write_playlist(h, reply);
+        hl_write_playlist(h, reply, false);
+        return;
+    }
+    if (strcmp(cmd, "snapshot") == 0) {
+        json_kv_bool(reply, "ok", true);
+        hl_write_status(h, reply);
+        hl_write_playlist(h, reply, true);
         return;
     }
     if (strcmp(cmd, "open") == 0 && protocol == 2) {
@@ -372,10 +457,7 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         hl_toggle(h);
     } else if (strcmp(cmd, "pause") == 0) {
         if (h->pending_play) h->pending_pause = true;
-        else if (strcmp(audio_state(h->audio), "playing") == 0
-            || strcmp(audio_state(h->audio), "loading") == 0
-            || strcmp(audio_state(h->audio), "buffering") == 0)
-            audio_pause(h->audio);
+        else audio_set_paused(h->audio, true);
     } else if (strcmp(cmd, "stop") == 0) {
         h->pending_play = false;
         audio_stop(h->audio);
@@ -411,6 +493,23 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         }
         h->volume = (int)KA_CLAMP(number, 0, 100);
         audio_set_volume(h->audio, h->volume);
+    } else if (strcmp(cmd, "balance") == 0) {
+        if (!json_get_int(request, "level", &number)) goto invalid;
+        h->balance = (int)KA_CLAMP(number, -100, 100);
+        audio_set_balance(h->audio, h->balance);
+    } else if (strcmp(cmd, "preamp") == 0) {
+        if (!json_get_num(request, "gain", &seconds)) goto invalid;
+        h->preamp = KA_CLAMP(seconds, -12, 12);
+        audio_set_preamp(h->audio, h->preamp);
+    } else if (strcmp(cmd, "eq_enabled") == 0) {
+        if (!json_get_bool(request, "on", &flag)) goto invalid;
+        h->eq_enabled = flag;
+        audio_set_eq_enabled(h->audio, flag);
+    } else if (strcmp(cmd, "eq_band") == 0) {
+        if (!json_get_int(request, "band", &number) || number < 0 || number > 9 ||
+            !json_get_num(request, "gain", &seconds)) goto invalid;
+        h->eq[number] = (float)KA_CLAMP(seconds, -12, 12);
+        audio_set_eq_band(h->audio, (int)number, h->eq[number]);
     } else if (strcmp(cmd, "add") == 0) {
         char path[4096];
         if (!json_get_str_exact(request, "path", path, sizeof(path)) || !path[0]) {
@@ -420,8 +519,16 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         int before = playlist_count(h->playlist);
         if (ka_is_dir(path))
             playlist_add_directory(h->playlist, path, true);
-        else if (ka_is_file(path))
-            playlist_add_file(h->playlist, path);
+        else if (ka_is_file(path)) {
+            char *ext = ka_ext_lower(path);
+            if (strcmp(ext, ".m3u") == 0 || strcmp(ext, ".m3u8") == 0)
+                playlist_load_m3u(h->playlist, path);
+            else if (strcmp(ext, ".pls") == 0)
+                playlist_load_pls(h->playlist, path);
+            else
+                playlist_add_file(h->playlist, path);
+            free(ext);
+        }
         if (playlist_count(h->playlist) == before) {
             hl_refuse(h, reply, "SOURCE_UNAVAILABLE", "nothing playable at that path");
             hl_write_status(h, reply);
@@ -429,6 +536,40 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         }
         if (playlist_current_index(h->playlist) < 0)
             playlist_set_current(h->playlist, before);
+    } else if (strcmp(cmd, "remove") == 0) {
+        char *array = json_get_raw(request, "indices");
+        if (!array || array[0] != '[') { free(array); goto invalid; }
+        const char *cursor = array;
+        char *value;
+        int indices[1024], count = 0;
+        bool removes_current = false;
+        while ((value = json_array_next(&cursor))) {
+            char *wrapped = ka_asprintf("{\"index\":%s}", value);
+            bool valid = json_get_int(wrapped, "index", &number) && number >= 0 && number < playlist_count(h->playlist);
+            free(wrapped); free(value);
+            if (!valid || count == 1024) { free(array); goto invalid; }
+            indices[count++] = (int)number;
+            if (number == playlist_current_index(h->playlist)) removes_current = true;
+        }
+        free(array);
+        if (removes_current) { h->pending_play = false; audio_stop(h->audio); }
+        playlist_remove(h->playlist, indices, count);
+        hl_set_title_from_track(h, playlist_current_track(h->playlist));
+    } else if (strcmp(cmd, "move") == 0) {
+        long long to;
+        if (!json_get_int(request, "from", &number) || !json_get_int(request, "to", &to) ||
+            number < 0 || to < 0 || number >= playlist_count(h->playlist) || to >= playlist_count(h->playlist)) goto invalid;
+        playlist_move(h->playlist, (int)number, (int)to);
+    } else if (strcmp(cmd, "sort") == 0) {
+        char by[32];
+        if (!json_get_str(request, "by", by, sizeof(by))) goto invalid;
+        if (strcmp(by, "filename") == 0) playlist_sort_by_filename(h->playlist);
+        else if (strcmp(by, "title") == 0) playlist_sort_by_title(h->playlist);
+        else if (strcmp(by, "duration") == 0) playlist_sort_by_duration(h->playlist);
+        else if (strcmp(by, "path") == 0) playlist_sort_by_path(h->playlist);
+        else goto invalid;
+    } else if (strcmp(cmd, "reverse") == 0) {
+        playlist_reverse(h->playlist);
     } else if (strcmp(cmd, "clear") == 0) {
         h->pending_play = false;
         audio_stop(h->audio);
@@ -460,6 +601,9 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
     json_kv_bool(reply, "ok", true);
     if (protocol == 1 && audio_source_info(h->audio).live) return;
     hl_write_status(h, reply);
+    return;
+invalid:
+    hl_refuse(h, reply, "INVALID_REQUEST", "invalid command arguments");
 }
 
 /* --- Entry point --- */
@@ -469,7 +613,6 @@ int headless_run(const char *const *files, int n_files,
 {
     Headless h = {0};
     h.running = true;
-    h.pending_index = -1;
 
     /* Writing to a client that vanished mid-reply must not kill the daemon;
      * send() also passes MSG_NOSIGNAL, this covers everything else. */
@@ -501,6 +644,8 @@ int headless_run(const char *const *files, int n_files,
      * the window layout and volume a windowed session is still using. */
     h.config = config_open(NULL);
     h.playlist = playlist_new();
+    h.revision = 1;
+    playlist_set_callbacks(h.playlist, on_playlist_change, NULL, &h);
     playlist_set_shuffle(h.playlist, config_shuffle(h.config));
     playlist_set_repeat(h.playlist, config_repeat(h.config));
 
@@ -510,20 +655,21 @@ int headless_run(const char *const *files, int n_files,
         .tag_found = on_tags,
         .eos = on_eos,
         .error = on_error,
+        .position_changed = on_position,
+        .spectrum = on_spectrum,
         .ud = &h,
     });
 
     h.volume = config_volume(h.config);
     audio_set_volume(h.audio, h.volume);
-    audio_set_balance(h.audio, config_balance(h.config));
-    if (config_eq_enabled(h.config)) {
-        audio_set_eq_enabled(h.audio, true);
-        float bands[10];
-        config_get_eq_bands(h.config, bands);
-        for (int i = 0; i < 10; i++)
-            audio_set_eq_band(h.audio, i, bands[i]);
-    }
-    audio_set_preamp(h.audio, config_eq_preamp(h.config));
+    h.balance = config_balance(h.config);
+    h.preamp = config_eq_preamp(h.config);
+    h.eq_enabled = config_eq_enabled(h.config);
+    config_get_eq_bands(h.config, h.eq);
+    audio_set_balance(h.audio, h.balance);
+    audio_set_eq_enabled(h.audio, h.eq_enabled);
+    for (int i = 0; i < 10; i++) audio_set_eq_band(h.audio, i, h.eq[i]);
+    audio_set_preamp(h.audio, h.preamp);
 
     for (int i = 0; i < n_files; i++) {
         if (ka_is_dir(files[i]))

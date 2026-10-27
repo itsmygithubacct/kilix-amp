@@ -1,0 +1,3 @@
+ladspa.h is the unmodified LADSPA 1.1 header from ladspa-sdk 1.17,
+https://www.ladspa.org/, distributed under LGPL-2.1-or-later (see LICENSE).
+It is used only to build the separately loaded meter plugin's ABI.

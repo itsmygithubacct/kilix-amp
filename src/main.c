@@ -12,7 +12,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "audio.h"
+#include "remote.h"
 #include "common.h"
 #include "config.h"
 #include "consts.h"
@@ -31,7 +31,7 @@
 
 typedef struct {
     Config *config;
-    AudioEngine *audio;
+    Remote *remote;
     Playlist *playlist;
     Skin skin;
     MainWindow main_win;
@@ -40,23 +40,38 @@ typedef struct {
     EditorWindow ed_win;
     DockManager dock;
     bool running;
-    /* Guards against an all-bad playlist looping forever under
-     * REPEAT_ALL. */
-    int auto_skip_count;
-    bool pending_play;
-    int pending_play_index;
 } App;
 
-/* --- Core playback actions --- */
-
-static void set_loading_title(App *app, Track *track)
+static void sync_playback(App *app)
 {
-    char *disp = track_display_title(track);
-    char *title = ka_asprintf("LOADING: %s", disp);
-    main_window_set_title(&app->main_win, title);
-    free(title);
-    free(disp);
+    Remote *r = app->remote;
+    MainWindow *mw = &app->main_win;
+    const char *title = *r->error ? r->error : r->title;
+    if (strcmp(mw->title_text, title) != 0)
+        main_window_set_title(mw, title);
+    main_window_set_play_state(mw, r->connected ? r->state : "stopped");
+    main_window_set_position(mw, r->position, r->duration);
+    main_window_set_track_info(mw, r->tags.bitrate / 1000, r->tags.sample_rate, r->tags.channels);
+    main_window_set_volume(mw, r->volume);
+    main_window_set_balance(mw, r->balance);
+    main_window_set_shuffle(mw, r->shuffle);
+    main_window_set_repeat(mw, r->repeat != REPEAT_OFF);
+    main_window_set_spectrum_data(mw, r->spectrum, AUDIO_SPECTRUM_BANDS);
+    eq_window_set_bands(&app->eq_win, r->eq);
+    eq_window_set_preamp(&app->eq_win, r->preamp);
+    eq_window_set_eq_enabled(&app->eq_win, r->eq_enabled);
+    if (r->connected) {
+        config_set_volume(app->config, r->volume);
+        config_set_balance(app->config, r->balance);
+        config_set_shuffle(app->config, r->shuffle);
+        config_set_repeat(app->config, r->repeat);
+        config_set_eq_bands(app->config, r->eq);
+        config_set_eq_preamp(app->config, r->preamp);
+        config_set_eq_enabled(app->config, r->eq_enabled);
+    }
 }
+
+/* --- Core playback actions --- */
 
 static void show_playlist(App *app)
 {
@@ -91,12 +106,12 @@ static void show_playlist(App *app)
 
 static void render_visible_windows(App *app)
 {
-    AudioSourceInfo info = audio_source_info(app->audio);
+    AudioSourceInfo info = app->remote->source;
     main_window_set_live_state(&app->main_win, info.live, info.degraded,
-        info.ended && strcmp(audio_state(app->audio), "stopped") == 0,
+        info.ended && strcmp(app->remote->state, "stopped") == 0,
         info.reconnect_required);
     if (info.live)
-        main_window_set_position(&app->main_win, audio_get_position_ms(app->audio), 0);
+        main_window_set_position(&app->main_win, app->remote->position, 0);
     if (app->main_win.kw.visible)
         main_window_render(&app->main_win);
     if (app->eq_win.kw.visible)
@@ -109,78 +124,37 @@ static void render_visible_windows(App *app)
 
 static void queue_current(App *app)
 {
-    Track *track = playlist_current_track(app->playlist);
-    if (!track && playlist_count(app->playlist) > 0)
-        track = playlist_set_current(app->playlist, 0);
-    if (track) {
-        app->pending_play_index = playlist_current_index(app->playlist);
-        app->pending_play = true;
-        set_loading_title(app, track);
-    }
-}
-
-static void queue_track(App *app, Track *track)
-{
-    if (!track)
-        return;
-    app->pending_play_index = playlist_current_index(app->playlist);
-    app->pending_play = true;
-    set_loading_title(app, track);
-}
-
-static void play_pending(App *app)
-{
-    if (!app->pending_play)
-        return;
-    app->pending_play = false;
-
-    Track *track = playlist_set_current(app->playlist, app->pending_play_index);
-    if (!track)
-        return;
-    if (track->source_kind == KA_ENCODEC_FILE) audio_load(app->audio, track->filepath);
-    else if (!audio_load_live(app->audio, track->source_kind, track->filepath, STDIN_FILENO)) return;
-    audio_play(app->audio);
-    char *disp = track_display_title(track);
-    main_window_set_title(&app->main_win, disp);
-    free(disp);
+    remote_command(app->remote, "play");
 }
 
 static void on_play(void *ud)
 {
     App *app = ud;
-    if (strcmp(audio_state(app->audio), "paused") == 0)
-        audio_pause(app->audio); /* unpause */
-    else if (audio_source_info(app->audio).encodec
-        && (strcmp(audio_state(app->audio), "loading") == 0
-            || strcmp(audio_state(app->audio), "buffering") == 0))
-        audio_play(app->audio);
-    else
-        queue_current(app);
+    remote_command(app->remote, "play");
 }
 
 static void on_pause(void *ud)
 {
     App *app = ud;
-    audio_pause(app->audio);
+    remote_command(app->remote, "toggle");
 }
 
 static void on_stop(void *ud)
 {
     App *app = ud;
-    audio_stop(app->audio);
-    main_window_set_play_state(&app->main_win, "stopped");
+    remote_command(app->remote, "stop");
 }
 
 static void on_prev(void *ud)
 {
     App *app = ud;
-    queue_track(app, playlist_prev_track(app->playlist));
+    remote_command(app->remote, "previous");
 }
 
 static void on_next(void *ud)
 {
     App *app = ud;
-    queue_track(app, playlist_next_track(app->playlist));
+    remote_command(app->remote, "next");
 }
 
 static void on_eject(void *ud)
@@ -206,7 +180,7 @@ static void on_eject(void *ud)
 static void on_volume(void *ud, int v)
 {
     App *app = ud;
-    audio_set_volume(app->audio, v);
+    remote_number(app->remote, "volume", "level", v);
     config_set_volume(app->config, v);
     main_window_set_volume(&app->main_win, v);
 }
@@ -214,22 +188,22 @@ static void on_volume(void *ud, int v)
 static void on_balance(void *ud, int v)
 {
     App *app = ud;
-    audio_set_balance(app->audio, v);
+    remote_number(app->remote, "balance", "level", v);
     config_set_balance(app->config, v);
 }
 
 static void on_seek(void *ud, int pct)
 {
     App *app = ud;
-    int dur = audio_get_duration_ms(app->audio);
+    int dur = app->remote->duration;
     if (dur > 0)
-        audio_seek(app->audio, (int)((int64_t)pct * dur / 100));
+        remote_number(app->remote, "seek", "pos", pct * dur / 100000.0);
 }
 
 static void on_shuffle(void *ud, bool v)
 {
     App *app = ud;
-    playlist_set_shuffle(app->playlist, v);
+    remote_boolean(app->remote, "shuffle", "on", v);
     config_set_shuffle(app->config, v);
 }
 
@@ -237,88 +211,10 @@ static void on_toggle_repeat(void *ud, bool v)
 {
     (void)v;
     App *app = ud;
-    playlist_toggle_repeat(app->playlist);
+    remote_command(app->remote, "repeat");
     config_set_repeat(app->config, playlist_repeat(app->playlist));
     main_window_set_repeat(&app->main_win,
                            playlist_repeat(app->playlist) != REPEAT_OFF);
-}
-
-/* --- Audio engine callbacks --- */
-
-static void on_eos(void *ud)
-{
-    App *app = ud;
-    if (audio_source_info(app->audio).live) return;
-    Track *track = playlist_next_track(app->playlist);
-    if (track)
-        queue_track(app, track);
-    else
-        main_window_set_play_state(&app->main_win, "stopped");
-}
-
-static void on_error(void *ud, const char *msg)
-{
-    App *app = ud;
-    char buf[512];
-    snprintf(buf, sizeof(buf), "ERROR: %s", msg);
-    main_window_set_title(&app->main_win, buf);
-    main_window_set_play_state(&app->main_win, "stopped");
-    if (audio_source_info(app->audio).live) return;
-    /* Stop auto-skipping once we've failed on every track. */
-    if (app->auto_skip_count >= playlist_count(app->playlist)) {
-        app->auto_skip_count = 0;
-        return;
-    }
-    app->auto_skip_count++;
-    Track *track = playlist_next_track(app->playlist);
-    if (track)
-        queue_track(app, track);
-    else
-        app->auto_skip_count = 0;
-}
-
-static void on_state_changed(void *ud, const char *state)
-{
-    App *app = ud;
-    if (strcmp(state, "playing") == 0)
-        app->auto_skip_count = 0;
-    main_window_set_play_state(&app->main_win, state);
-}
-
-static void on_position(void *ud, int pos_ms, int dur_ms)
-{
-    App *app = ud;
-    main_window_set_position(&app->main_win, pos_ms, dur_ms);
-}
-
-static void on_tags(void *ud, const AudioTags *tags)
-{
-    App *app = ud;
-    Track *track = playlist_current_track(app->playlist);
-    if (!track)
-        return;
-    if (tags->title[0]) {
-        free(track->title);
-        track->title = ka_strdup(tags->title);
-    }
-    if (tags->artist[0]) {
-        free(track->artist);
-        track->artist = ka_strdup(tags->artist);
-    }
-    char *disp = track_display_title(track);
-    main_window_set_title(&app->main_win, disp);
-    free(disp);
-
-    track->bitrate = tags->bitrate / 1000;
-    main_window_set_track_info(&app->main_win, track->bitrate,
-                               tags->sample_rate,
-                               tags->channels == 1 ? 1 : 2);
-}
-
-static void on_spectrum(void *ud, const float *mags, int n)
-{
-    App *app = ud;
-    main_window_set_spectrum_data(&app->main_win, mags, n);
 }
 
 /* --- EQ window callbacks --- */
@@ -326,7 +222,7 @@ static void on_spectrum(void *ud, const float *mags, int n)
 static void on_eq_band(void *ud, int band, double gain)
 {
     App *app = ud;
-    audio_set_eq_band(app->audio, band, gain);
+    remote_eq_band(app->remote, band, gain);
     float bands[10];
     config_get_eq_bands(app->config, bands);
     bands[band] = (float)gain;
@@ -336,14 +232,14 @@ static void on_eq_band(void *ud, int band, double gain)
 static void on_eq_enabled(void *ud, bool enabled)
 {
     App *app = ud;
-    audio_set_eq_enabled(app->audio, enabled);
+    remote_boolean(app->remote, "eq_enabled", "on", enabled);
     config_set_eq_enabled(app->config, enabled);
 }
 
 static void on_preamp(void *ud, double v)
 {
     App *app = ud;
-    audio_set_preamp(app->audio, v);
+    remote_number(app->remote, "preamp", "gain", v);
     config_set_eq_preamp(app->config, v);
 }
 
@@ -354,7 +250,7 @@ static void on_preset(void *ud, const char *name)
         if (strcmp(EQ_PRESETS[i].name, name) == 0) {
             eq_window_set_bands(&app->eq_win, EQ_PRESETS[i].gains);
             for (int b = 0; b < 10; b++)
-                audio_set_eq_band(app->audio, b, EQ_PRESETS[i].gains[b]);
+                remote_eq_band(app->remote, b, EQ_PRESETS[i].gains[b]);
             config_set_eq_bands(app->config, EQ_PRESETS[i].gains);
             return;
         }
@@ -406,7 +302,7 @@ static void on_quit_requested(void *ud)
 static void on_track_activated(void *ud, int idx)
 {
     App *app = ud;
-    queue_track(app, playlist_set_current(app->playlist, idx));
+    remote_play_index(app->remote, idx);
 }
 
 static void on_add_files(void *ud)
@@ -471,6 +367,13 @@ DEF_DRAG(ed_win, editor)
 static void on_playlist_changed(void *ud)
 {
     App *app = ud;
+    /* A service snapshot replaces Track storage. Do not reuse pointer-based
+     * selections from an older snapshot to address newly allocated entries. */
+    free(app->pl_win.selected_tracks);
+    app->pl_win.selected_tracks = NULL;
+    app->pl_win.selected_track_count = 0;
+    if (app->pl_win.selected)
+        memset(app->pl_win.selected, 0, (size_t)app->pl_win.selected_cap * sizeof(bool));
     playlist_window_on_playlist_changed(&app->pl_win);
 }
 
@@ -541,11 +444,10 @@ static void handle_hotkey(App *app, SDL_Keycode key, uint16_t mod)
         on_eject(app);
         break;
     case SDLK_LEFT:
-        audio_seek(app->audio,
-                   KA_MAX(0, audio_get_position_ms(app->audio) - 5000));
+        remote_number(app->remote, "seek", "pos", KA_MAX(0, app->remote->position - 5000) / 1000.0);
         break;
     case SDLK_RIGHT:
-        audio_seek(app->audio, audio_get_position_ms(app->audio) + 5000);
+        remote_number(app->remote, "seek", "pos", (app->remote->position + 5000) / 1000.0);
         break;
     case SDLK_UP:
         on_volume(app, KA_MIN(100, app->main_win.volume_slider.value + 5));
@@ -858,10 +760,19 @@ int main(int argc, char **argv)
         skin_load(&app->skin, skin_dir);
     }
 
-    app->audio = audio_new();
     app->playlist = playlist_new();
-    playlist_set_shuffle(app->playlist, config_shuffle(app->config));
-    playlist_set_repeat(app->playlist, config_repeat(app->config));
+    app->remote = remote_new(app->playlist, socket_arg);
+    if (!(live_kind == KA_ENCODEC_STDIN ? remote_start_stdin(app->remote) : remote_start(app->remote))) {
+        fprintf(stderr, "kilix-amp: %s\n", app->remote->error);
+        remote_free(app->remote);
+        playlist_free(app->playlist);
+        config_close(app->config);
+        skin_destroy(&app->skin);
+        free(skin_dir);
+        free(app);
+        SDL_Quit();
+        return 1;
+    }
 
     /* Create windows */
     main_window_init(&app->main_win, &app->skin);
@@ -881,25 +792,7 @@ int main(int argc, char **argv)
     SDL_SetWindowSize(app->ed_win.kw.win, app->ed_win.ed_w,
                       app->ed_win.ed_h);
 
-    /* Apply config */
-    main_window_set_volume(&app->main_win, config_volume(app->config));
-    main_window_set_balance(&app->main_win, config_balance(app->config));
-    main_window_set_shuffle(&app->main_win, config_shuffle(app->config));
-    main_window_set_repeat(&app->main_win,
-                           config_repeat(app->config) > 0);
-    audio_set_volume(app->audio, config_volume(app->config));
-
-    if (config_eq_enabled(app->config)) {
-        eq_window_set_eq_enabled(&app->eq_win, true);
-        audio_set_eq_enabled(app->audio, true);
-        float bands[10];
-        config_get_eq_bands(app->config, bands);
-        eq_window_set_bands(&app->eq_win, bands);
-        for (int i = 0; i < 10; i++)
-            audio_set_eq_band(app->audio, i, bands[i]);
-    }
-    eq_window_set_preamp(&app->eq_win, config_eq_preamp(app->config));
-    audio_set_preamp(app->audio, config_eq_preamp(app->config));
+    /* Playback settings come from the shared service after callbacks exist. */
 
     float ui_scale =
         cli_scale > 0.0f
@@ -933,16 +826,6 @@ int main(int argc, char **argv)
         .quit = on_quit_requested,
         .ud = app,
     };
-
-    audio_set_callbacks(app->audio, &(AudioCallbacks){
-        .state_changed = on_state_changed,
-        .position_changed = on_position,
-        .tag_found = on_tags,
-        .spectrum = on_spectrum,
-        .eos = on_eos,
-        .error = on_error,
-        .ud = app,
-    });
 
     app->eq_win.cbs = (EQWindowCallbacks){
         .eq_changed = on_eq_band,
@@ -1011,19 +894,30 @@ int main(int argc, char **argv)
     if (!have_main_pos)
         dock_position_default(&app->dock);
 
+    remote_poll(app->remote, true);
+    sync_playback(app);
+
+    if (live_kind == KA_ENCODEC_SOCKET) {
+        JsonBuf request = {0};
+        json_obj_begin(&request);
+        json_kv_str(&request, "cmd", "open");
+        json_kv_str(&request, "source_type", "encodec-unix");
+        json_kv_str(&request, "path", live_path);
+        remote_request(app->remote, &request);
+        json_free(&request);
+    }
+
     /* --- Load files from command line --- */
+    int first_added = playlist_count(app->playlist);
     for (int i = 0; i < n_files; i++) {
         if (ka_is_dir(files[i]))
             playlist_add_directory(app->playlist, files[i], true);
         else if (ka_is_file(files[i]))
             playlist_add_file(app->playlist, files[i]);
     }
-    if (live_kind != KA_ENCODEC_FILE) playlist_add_live(app->playlist, live_path, live_kind);
-    if ((n_files > 0 || live_kind != KA_ENCODEC_FILE) && playlist_count(app->playlist) > 0) {
+    if (playlist_count(app->playlist) > first_added) {
         show_playlist(app);
-        if (playlist_current_index(app->playlist) < 0)
-            playlist_set_current(app->playlist, 0);
-        queue_current(app);
+        remote_play_index(app->remote, first_added);
     }
 
     /* --- Main loop --- */
@@ -1043,7 +937,8 @@ int main(int argc, char **argv)
         while (SDL_PollEvent(&ev))
             dispatch_event(app, &ev);
 
-        audio_poll(app->audio);
+        if (remote_poll(app->remote, false))
+            sync_playback(app);
 
         uint32_t now = SDL_GetTicks();
         if (now - last_scroll >= 1000 / SCROLL_FPS) {
@@ -1054,18 +949,13 @@ int main(int argc, char **argv)
             last_render = now;
             render_visible_windows(app);
         }
-        if (app->pending_play) {
-            render_visible_windows(app);
-            last_render = SDL_GetTicks();
-            play_pending(app);
-        }
         SDL_Delay(5);
     }
 
     /* --- Save config on exit --- */
     save_state(app);
 
-    audio_cleanup(app->audio);
+    remote_free(app->remote);
     main_window_destroy(&app->main_win);
     eq_window_destroy(&app->eq_win);
     playlist_window_destroy(&app->pl_win);

@@ -1,6 +1,5 @@
-/* Audio playback engine: libsndfile decode -> preamp/EQ/volume/pan chain ->
- * SDL queued audio, with in-house FFT spectrum taps.
- * Port of nixamp lib/audio_engine.py (GStreamer pipeline replaced). */
+/* Shared playback: kilix-mpv for general media and MIDI; the native engine
+ * retains EnCodec file/live decoding and its admission and wire contracts. */
 #ifndef KA_AUDIO_H
 #define KA_AUDIO_H
 
@@ -25,7 +24,7 @@ typedef struct {
     void (*eos)(void *ud);
     void (*error)(void *ud, const char *msg);
     void *ud;
-    /* Read-only pre-DSP PCM tap for diagnostics and sample-equivalence tests.
+    /* Native EnCodec read-only pre-DSP PCM tap for sample-equivalence tests.
      * The buffer is valid only for this callback; no device ownership transfer. */
     void (*decoded_pcm)(void *ud, const float *pcm, size_t frames,
         unsigned int channels, unsigned int sample_rate, uint64_t position);
@@ -51,6 +50,7 @@ void audio_load(AudioEngine *ae, const char *filepath);
 bool audio_load_live(AudioEngine *ae, KaEncodecKind kind, const char *path, int input_fd);
 void audio_play(AudioEngine *ae);
 void audio_pause(AudioEngine *ae); /* toggles pause <-> resume */
+void audio_set_paused(AudioEngine *ae, bool paused);
 void audio_stop(AudioEngine *ae);
 void audio_seek(AudioEngine *ae, int position_ms);
 void audio_set_volume(AudioEngine *ae, int volume);   /* 0-100 */

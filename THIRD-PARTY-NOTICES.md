@@ -77,3 +77,11 @@ FluidSynth. They are linked from the operating-system dependency closure, not
 vendored here, and retain their own package licences and notices. The Termixer
 source has its separate Cargo dependency closure; no Termixer dependency source
 is copied into this repository.
+
+## LADSPA ABI header
+
+`vendor/ladspa/ladspa.h` is the unmodified LADSPA 1.1 header from ladspa-sdk
+1.17, licensed LGPL-2.1-or-later. Its complete license is in
+`vendor/ladspa/LICENSE`; `make install` includes it as `COPYING.LADSPA` beside
+the executable. The separately loaded `meter/meter.c` implementation is MIT.
+The meter passes stereo audio unchanged and reports bounded spectrum frames.

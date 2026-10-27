@@ -18,6 +18,7 @@ LDLIBS += $(ENCODEC_LIBS)
 endif
 
 BIN      = kilix-amp
+PREFIX  ?= $(HOME)/.local
 SRCDIR   = src
 OBJDIR   = $(if $(filter 1,$(ENCODEC)),build-encodec,build)
 TESTDIR  = tests
@@ -30,9 +31,12 @@ LIBOBJS  = $(filter-out $(OBJDIR)/main.o,$(OBJS))
 TESTSRCS = $(wildcard $(TESTDIR)/test_*.c)
 TESTBINS = $(TESTSRCS:$(TESTDIR)/%.c=$(OBJDIR)/%)
 
-all: $(BIN)
+all: $(BIN) libkilix-meter.so
 
-$(BIN): $(OBJS) FORCE
+libkilix-meter.so: meter/meter.c vendor/ladspa/ladspa.h
+	$(CC) -O2 -std=c11 -Wall -Wextra -fPIC -shared -o $@ $<
+
+$(BIN): $(OBJS) FORCE | libkilix-meter.so
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
@@ -64,10 +68,23 @@ test: $(TESTBINS)
 	done; \
 	if [ $$fail -eq 0 ]; then echo "ALL TESTS PASSED"; else echo "FAILURES"; exit 1; fi
 
+test-integration: all
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/test_shared_playback.py
+
+runtime-check: all
+	PYTHONDONTWRITEBYTECODE=1 python3 tools/check_runtime.py
+
+install: all
+	install -d "$(DESTDIR)$(PREFIX)/lib/kilix-amp" "$(DESTDIR)$(PREFIX)/bin"
+	install -m 755 $(BIN) libkilix-meter.so "$(DESTDIR)$(PREFIX)/lib/kilix-amp/"
+	install -m 644 LICENSE "$(DESTDIR)$(PREFIX)/lib/kilix-amp/LICENSE"
+	install -m 644 vendor/ladspa/LICENSE "$(DESTDIR)$(PREFIX)/lib/kilix-amp/COPYING.LADSPA"
+	ln -sfn ../lib/kilix-amp/kilix-amp "$(DESTDIR)$(PREFIX)/bin/kilix-amp"
+
 clean:
-	rm -rf build build-encodec $(BIN)
+	rm -rf build build-encodec $(BIN) libkilix-meter.so
 
 -include $(OBJS:.o=.d)
 
 FORCE:
-.PHONY: all debug test clean FORCE
+.PHONY: all debug test test-integration runtime-check install clean FORCE

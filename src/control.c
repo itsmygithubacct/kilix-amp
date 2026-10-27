@@ -32,7 +32,8 @@ struct ControlServer {
 static bool set_nonblocking(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
-    return flags != -1 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+    return flags != -1 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0
+        && fcntl(fd, F_SETFD, FD_CLOEXEC) == 0;
 }
 
 char *control_default_socket_path(void)

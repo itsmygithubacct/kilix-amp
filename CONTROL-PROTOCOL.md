@@ -101,3 +101,42 @@ unavailable live endpoint). Source error text is latched until another load.
 Control paths are local user data. Frontends should check an owner-only socket
 and same-UID peer before sending paths. The backend refuses to overwrite an
 existing socket and removes only its own socket identity on clean shutdown.
+
+## Shared playback capability
+
+The new protocol-2 `ping` adds `shared_playback:true`, `service:2` and
+`backend:"kilix-mpv"`. The service number is a capability revision, separate
+from the wire protocol. Version-1 ordinary-file clients remain supported.
+Closing a controller leaves a successfully negotiated shared service running;
+unfinished startup remains owned by its launching client and is canceled on
+exit. Stale socket paths still require explicit cleanup after verifying that
+no service is running. The server never replaces an occupied endpoint.
+
+`state` adds `pid`, `queue_revision`, `balance`, `preamp`, `eq_enabled`, ten
+`eq` gains, 75 `spectrum` values, `track_title`, `artist` and `last_error`.
+`backend` is `native-encodec` while an EnCodec source is selected, otherwise
+`kilix-mpv`. Protocol-2 `bitrate` remains bits/second. Live duration, wire
+metadata, admission, error and seek rules above are unchanged.
+
+`snapshot` returns state plus the playlist in one record. `playlist` and
+`snapshot` include `items` (paths) and `tracks` (file, title, artist, album,
+duration and source_kind). `queue_revision` changes when rows or metadata
+change. Index-based controllers submit the revision of their displayed rows;
+a mismatch returns `STALE_QUEUE` without mutation. A malformed revision is
+refused. Legacy callers may omit it.
+
+Additional commands are `balance` (`level` -100..100), `preamp` (`gain`
+-12..12 dB), `eq_enabled` (`on` boolean), `eq_band` (`band` 0..9, `gain`
+-12..12 dB), `remove` (`indices` array), `move` (`from`, `to`), `sort` (`by`
+filename/title/duration/path), and `reverse`. Integer arguments use JSON
+integers. `add` also accepts M3U/PLS playlists and directories. Duplicate
+remove indices remove a row once; reorder operations preserve the current
+track. Controllers send absolute paths because they can run from a different
+working directory than the service.
+
+mpv IPC and the spectrum datagram socket are private inherited descriptors.
+The service retires mpv before selecting a native EnCodec source and retires
+the native output before returning to mpv. At most one output engine is alive.
+GUI `--encodec-stdin` transfers stdin when starting a new service; attaching
+stdin to an existing session is refused. Unix streams can be opened through
+an existing session with protocol-2 `open`.

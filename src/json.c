@@ -1,6 +1,7 @@
 #include "json.h"
 
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -225,6 +226,22 @@ void json_arr_str(JsonBuf *j, const char *value)
 {
     jb_sep(j);
     jb_escaped(j, value ? value : "");
+}
+
+void json_arr_num(JsonBuf *j, double value)
+{
+    char num[64];
+    snprintf(num, sizeof(num), "%.3f", isfinite(value) ? value : 0.0);
+    jb_sep(j);
+    jb_puts(j, num);
+}
+
+void json_arr_int(JsonBuf *j, long long value)
+{
+    char num[32];
+    snprintf(num, sizeof(num), "%lld", value);
+    jb_sep(j);
+    jb_puts(j, num);
 }
 
 /* --- Reader --- */
@@ -457,16 +474,21 @@ static bool request_value(RequestParser *parser, unsigned int depth)
     return number_end == parser->at && isfinite(number);
 }
 
-bool json_validate_request(const char *json)
+bool json_validate_document(const char *json, size_t limit)
 {
     if (json == NULL) return false;
-    size_t length = strnlen(json, 8193u);
-    if (length > 8192u) return false;
+    size_t length = strnlen(json, limit + 1);
+    if (length > limit) return false;
     RequestParser parser = {json, json + length};
     request_ws(&parser);
     if (parser.at == parser.end || *parser.at != '{' || !request_value(&parser, 0u)) return false;
     request_ws(&parser);
     return parser.at == parser.end;
+}
+
+bool json_validate_request(const char *json)
+{
+    return json_validate_document(json, 8192u);
 }
 
 bool json_has_key(const char *json, const char *key)
@@ -488,6 +510,29 @@ bool json_get_str_exact(const char *json, const char *key, char *out, size_t n)
     }
     free(copy);
     return valid;
+}
+
+char *json_get_raw(const char *json, const char *key)
+{
+    const char *p = find_value(json, key);
+    const char *end = p ? skip_value(p) : NULL;
+    return end ? strndup(p, (size_t)(end - p)) : NULL;
+}
+
+char *json_array_next(const char **cursor)
+{
+    if (!cursor || !*cursor)
+        return NULL;
+    const char *p = skip_ws(*cursor);
+    if (*p == '[' || *p == ',')
+        p = skip_ws(p + 1);
+    if (!*p || *p == ']')
+        return NULL;
+    const char *end = skip_value(p);
+    if (!end)
+        return NULL;
+    *cursor = end;
+    return strndup(p, (size_t)(end - p));
 }
 
 static size_t put_utf8(char *out, size_t n, size_t at, unsigned long cp)

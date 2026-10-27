@@ -5,6 +5,7 @@
 
 #include "common.h"
 #include "encodec_source.h"
+#include "json.h"
 
 enum {
     REPEAT_OFF = 0,
@@ -31,6 +32,11 @@ const char *track_filename(const Track *t);
 char *track_duration_str(const Track *t);
 
 typedef struct Playlist Playlist;
+/* A GUI mirror delegates edits to the service. Installing a snapshot never
+ * invokes this sink; standalone/service playlists have no sink. */
+typedef void (*PlaylistRemoteFn)(void *ud, JsonBuf *request);
+void playlist_set_remote(Playlist *pl, PlaylistRemoteFn sink, void *ud);
+bool playlist_apply_snapshot(Playlist *pl, const char *reply);
 
 /* Change callbacks (both optional). */
 typedef void (*PlaylistChangedFn)(void *ud);

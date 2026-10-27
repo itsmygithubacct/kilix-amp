@@ -37,6 +37,8 @@ void json_kv_num(JsonBuf *j, const char *key, double value);
 void json_kv_bool(JsonBuf *j, const char *key, bool value);
 void json_kv_null(JsonBuf *j, const char *key);
 void json_arr_str(JsonBuf *j, const char *value);
+void json_arr_num(JsonBuf *j, double value);
+void json_arr_int(JsonBuf *j, long long value);
 
 /* --- Reader --- */
 
@@ -49,12 +51,18 @@ bool json_get_str(const char *json, const char *key, char *out, size_t n);
 bool json_get_num(const char *json, const char *key, double *out);
 bool json_get_int(const char *json, const char *key, long long *out);
 bool json_get_bool(const char *json, const char *key, bool *out);
+/* Copies of nested values. Caller frees each result. Array iteration starts
+ * at '[' and advances the cursor; NULL marks its end or malformed input. */
+char *json_get_raw(const char *json, const char *key);
+char *json_array_next(const char **cursor);
 
 /* Complete bounded request validation before dispatch. Keys are unescaped
  * ASCII (the existing lookup contract), unique in each object; depth <=16,
  * <=64 keys per object, total <=8192 bytes. Strings must be valid UTF-8 with
  * paired surrogates and no embedded NUL. No malformed suffix is ignored. */
 bool json_validate_request(const char *json);
+/* Same grammar and depth bound, with a larger byte limit for replies. */
+bool json_validate_document(const char *json, size_t limit);
 bool json_has_key(const char *json, const char *key);
 /* Exact string getter: no truncation, output unchanged on refusal. */
 bool json_get_str_exact(const char *json, const char *key, char *out, size_t n);

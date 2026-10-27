@@ -39,14 +39,27 @@ Or run:
 ./install-deps.sh
 ```
 
-Audio decoding goes through libsndfile for WAV, FLAC, Ogg/Vorbis, Opus, MP3
-(libsndfile >= 1.1), AIFF and friends. MIDI files (`.mid`/`.midi`) are
-rendered through FluidSynth using a GM SoundFont, then played through the same
-SDL/EQ/volume pipeline as decoded audio. Set `KILIX_AMP_SOUNDFONT=/path/to.sf2`
-to override the default SoundFont search.
+General music playback uses the installed `kilix-mpv` executable, including
+MP3, FLAC, Ogg/Opus, AAC/M4A and WAV. MIDI is rendered by a cancellable
+FluidSynth worker and then played through mpv. Set
+`KILIX_AMP_SOUNDFONT=/path/to.sf2` to select a SoundFont. libsndfile remains a
+build dependency for the audio editor and the native engine.
 
-Formats libsndfile cannot open (m4a/aac/wma) are skipped with an error title,
-and the playlist auto-skips to the next track.
+The GUI and `kilix-music` attach to one per-user Amp service. It owns the
+playlist, playback position, volume, balance, ten-band EQ and repeat/shuffle
+settings. Opening a second controller preserves the session; closing a
+controller leaves playback running. Stop playback with Stop, or terminate the
+service explicitly with the `quit` control command. Protocol 2 and the
+`shared_playback` capability describe this lifecycle.
+
+mpv's private JSON IPC controls general playback. The separately built
+`libkilix-meter.so` passes audio unchanged and supplies spectrum samples from
+the actual filtered output. `make all` builds both files; keep them together.
+`make install PREFIX="$HOME/.local"` installs the pair and their license files.
+`make runtime-check` verifies the installed mpv's decoder, lavfi/EQ/pan/LADSPA
+filters and the companion library using generated silence and no audio device.
+The 0.2.2 catalog runs this check as part of its selected build. `KILIX_MPV`
+may select an explicit executable; `KILIX_AMP_AUDIO_OUTPUT=null` is for tests.
 
 Local `.kenc` files can use the optional native `libkilix-encodec` decoder.
 Build with `make ENCODEC=1` after installing its headers, shared library and
@@ -85,7 +98,7 @@ apply. Admission repeats for every model load; graph-directory environment
 variables do not authorize normal playback. Regular input audio files are
 also copied into sealed private snapshots.
 
-Both windowed and headless playback use one asynchronous source adapter and the
+The shared service uses one asynchronous native EnCodec source adapter and the
 existing preamp/EQ/volume/pan/device path. An owned same-executable worker loads
 models and decodes bounded records over a private socketpair; the UI performs
 only nonblocking IPC and owned-child reaping. Pause keeps bounded prefetch;
@@ -107,7 +120,7 @@ playback does not by itself assert hardware or listening qualification.
 
 For a live 24 kHz mono stream, use `--encodec-stdin` or
 `--encodec-socket /absolute/private/source.sock`, without a file playlist.
-Both windowed and headless modes accept the same framed input described in
+Both controllers use the native framed input described in
 [LIVE-FORMAT.md](LIVE-FORMAT.md). These are binary EnCodec inputs, not raw PCM,
 local `.kenc` files or arbitrary network streams. Live playback shows elapsed
 time and `LIVE`, has no finite duration or seek control, and reports recovery,
@@ -270,7 +283,10 @@ is deferred to the next tick so a reply never waits on the decoder.
 
 | Module | Purpose |
 |--------|---------|
-| `src/audio.c` | playback engine: libsndfile decode or FluidSynth MIDI render -> preamp/EQ/volume/pan -> SDL queued audio |
+| `src/audio.c` | selects exactly one output engine: mpv for general media, native EnCodec for file/live sources |
+| `src/mpv_audio.c`, `meter/meter.c` | managed mpv IPC, filters, cancellable MIDI rendering and actual-output spectrum |
+| `src/native_audio.c` | retained EnCodec admission, decoder, pre-DSP diagnostics and SDL output |
+| `src/remote.c` | GUI controller of the shared protocol-2 service |
 | `src/headless.c` | `--headless`: the engine and playlist wired to the control socket, no windows |
 | `src/control.c` | non-blocking AF_UNIX server; line framing, so a quiet client cannot stall decoding |
 | `src/json.c` | bounded strict request validation, typed field readers and single-line writer |
@@ -304,7 +320,7 @@ is deferred to the next tick so a reply never waits on the decoder.
 - **File dialogs use zenity** when installed, otherwise a text-entry path
   prompt.
 - **Decoding is libsndfile-based** instead of GStreamer, with native
-  FluidSynth rendering for MIDI, so codec coverage differs slightly
+  FluidSynth rendering for MIDI; general playback formats come from kilix-mpv
   (no m4a/wma).
 - **Pitch shift uses linear resampling** instead of scipy's FFT resampler;
   audibly equivalent for the +-12 semitone UI range.
