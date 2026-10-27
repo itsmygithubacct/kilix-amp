@@ -6,3 +6,5 @@ kilix-amp
 *.o
 *.d
 libkilix-meter.so
+/build-shared-asan/
+__pycache__/

@@ -107,6 +107,9 @@ void playlist_window_on_playlist_changed(PlaylistWindow *pw)
 
 void playlist_window_on_current_changed(PlaylistWindow *pw, int idx)
 {
+    /* Empty service snapshots have no current row. Scrolling to -1 would
+     * make the next render dereference a nonexistent Track. */
+    if (idx < 0) return;
     /* Auto-scroll to keep current track visible */
     if (idx < pw->scroll_offset)
         pw->scroll_offset = idx;
