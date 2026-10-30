@@ -62,10 +62,13 @@ static bool socket_is_live(const char *path)
     if (strlen(path) >= sizeof(addr.sun_path))
         return false;
     memcpy(addr.sun_path, path, strlen(path));
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0)
         return false;
-    bool live = connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+    /* A busy listener can have a full accept queue. Never wait for it to
+     * drain, or mistake an inconclusive probe for a dead endpoint. */
+    int result = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    bool live = result == 0 || (errno != ECONNREFUSED && errno != ENOENT);
     close(fd);
     return live;
 }

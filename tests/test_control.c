@@ -1,12 +1,15 @@
 /* Control socket: framing, the protocol envelope, and startup recovery. */
 #include "ktest.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "control.h"
@@ -411,6 +414,65 @@ static void test_second_listener_refused(void)
     control_close(cs);
 }
 
+/* A listener with a full accept queue is still live. Probing it must not
+ * hang a second startup while the existing service is busy. */
+static void test_full_listener_queue_refused_without_blocking(void)
+{
+    char path[KT_PATH_CAP];
+    ControlServer *cs = listen_at("full.sock", path, sizeof(path));
+    ASSERT_TRUE(cs != NULL);
+    if (!cs) return;
+
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    memcpy(addr.sun_path, path, strlen(path));
+    int clients[64], count = 0;
+    bool full = false;
+    while (count < (int)KA_LEN(clients)) {
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        ASSERT_TRUE(fd >= 0);
+        if (fd < 0) break;
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+            close(fd);
+            break;
+        }
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+            full = errno == EAGAIN || errno == EWOULDBLOCK;
+            close(fd);
+            break;
+        }
+        clients[count++] = fd;
+    }
+    ASSERT_TRUE(full);
+    if (full) {
+        struct stat before, after;
+        ASSERT_EQ_INT(lstat(path, &before), 0);
+        pid_t child = fork();
+        ASSERT_TRUE(child >= 0);
+        if (child == 0) {
+            /* Bound the regression even when the production probe blocks. */
+            alarm(2);
+            char err[512] = {0};
+            ControlServer *dup = control_listen(path, err, sizeof(err));
+            _exit(dup == NULL && strstr(err, "already listening") != NULL ? 0 : 1);
+        }
+        if (child > 0) {
+            int status = 0;
+            pid_t waited;
+            do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+            ASSERT_EQ_INT(waited, child);
+            ASSERT_TRUE(WIFEXITED(status));
+            if (WIFEXITED(status)) ASSERT_EQ_INT(WEXITSTATUS(status), 0);
+        }
+        ASSERT_EQ_INT(lstat(path, &after), 0);
+        ASSERT_EQ_INT(after.st_dev, before.st_dev);
+        ASSERT_EQ_INT(after.st_ino, before.st_ino);
+    }
+    for (int i = 0; i < count; i++) close(clients[i]);
+    control_close(cs);
+}
+
 /* The path rule is a published contract: kilix-music resolves it identically. */
 static void test_default_socket_path(void)
 {
@@ -493,6 +555,7 @@ int main(void)
     RUN(test_symlink_socket_path_is_preserved);
     RUN(test_replaced_socket_path_is_preserved_on_close);
     RUN(test_second_listener_refused);
+    RUN(test_full_listener_queue_refused_without_blocking);
     RUN(test_default_socket_path);
     RUN(test_explicit_versions_and_complete_requests);
     int rc = kt_summary("control");
