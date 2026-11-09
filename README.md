@@ -4,6 +4,12 @@ A pixel-faithful recreation of the classic Winamp 2.x music player, written
 in C11 with SDL2. This is a full rewrite of the Python/Qt "nixamp" project
 with the same feature set and window-for-window architecture.
 
+Installable on demand from the Kilix content catalog as `kilix-amp`
+(`kilix install kilix-amp`). `kilix amp` installs the pinned build on first use
+and starts the player; `kilix amp --headless` starts only its playback service.
+The catalog builds with `make all runtime-check ENCODEC=1` and runs the player
+as an X application in a Kilix pane.
+
 ![kilix-amp playing Raleigh Soliloquy Pt. I](docs/screenshot.png)
 
 ## Features
@@ -21,160 +27,21 @@ with the same feature set and window-for-window architecture.
 - **Headless mode** - `--headless` serves a control socket, so a text front end
   drives the same decoder instead of reimplementing playback
 
-## Dependencies
-
-Runtime/build libraries (Debian package names):
+## Quick start
 
 ```bash
-sudo apt install build-essential libsdl2-dev libsdl2-image-dev \
-    libsndfile1-dev zlib1g-dev libfluidsynth-dev fluidsynth \
-    fluid-soundfont-gm
-# optional, for native file-open dialogs:
-sudo apt install zenity
+./install-deps.sh        # or the apt line in docs/build-and-playback.md
+make                     # ./kilix-amp and libkilix-meter.so
+make test
+./kilix-amp ~/Music/
 ```
 
-Or run:
-
-```bash
-./install-deps.sh
-```
-
-General music playback uses the installed `kilix-mpv` executable, including
-MP3, FLAC, Ogg/Opus, AAC/M4A and WAV. MIDI is rendered by a cancellable
-FluidSynth worker and then played through mpv. Set
-`KILIX_AMP_SOUNDFONT=/path/to.sf2` to select a SoundFont. libsndfile remains a
-build dependency for the audio editor and the native engine.
-
-The GUI and `kilix-music` attach to one per-user Amp service. It owns the
-playlist, playback position, volume, balance, ten-band EQ and repeat/shuffle
-settings. Opening a second controller preserves the session; closing a
-controller leaves playback running. Stop playback with Stop, or terminate the
-service explicitly with the `quit` control command. Protocol 2 and the
-`shared_playback` capability describe this lifecycle.
-
-mpv's private JSON IPC controls general playback. The separately built
-`libkilix-meter.so` passes audio unchanged and supplies spectrum samples from
-the actual filtered output. `make all` builds both files; keep them together.
-`make install PREFIX="$HOME/.local"` installs the pair and their license files.
-`make runtime-check` verifies the installed mpv's decoder, lavfi/EQ/pan/LADSPA
-filters and the companion library using generated silence and no audio device.
-The 0.2.2 catalog runs this check as part of its selected build. `KILIX_MPV`
-may select an explicit executable; `KILIX_AMP_AUDIO_OUTPUT=null` is for tests.
-
-Local `.kenc` files can use the optional native `libkilix-encodec` decoder.
-Build with `make ENCODEC=1` after installing its headers, shared library and
-pkg-config metadata. Build that library with `ONNX=1 CONTENT=1` and the exact
-`CONTENT_SOURCE` and `CONTENT_COMMIT` supplied by the application closure.
-Its embedded catalog, admission helper and build receipt travel with the
-library. `ENCODEC_CFLAGS` and `ENCODEC_LIBS` can select an explicit development
-installation. The default build has no EnCodec runtime dependency
-and reports an unavailable-model error for these files.
-
-Normal file and live opens require the selected model to be installed and
-admitted by the packaged Kilix content catalog (asset/v3) and a durable
-kilix-license acceptance receipt. The installed tree must be exactly where
-kilix-content's `Installer.asset_destination()` places it,
-`<content root>/assets/<asset id>`, and match the catalog's manifest.
-`KILIX_CONTENT_ROOT` selects the content storage root; otherwise Amp uses the
-account's NSS home plus `.local/gpu_terminal/kilix/data/desktop-apps`. A host
-that relocates Kilix storage must pass its resolved content root.
-Receipts are only read, never written, from the directory
-`kilix_license.receipt_store_root()` names: `$KILIX_LICENSE_RECEIPTS` if set,
-otherwise `$GPU_TERMINAL_HOME/license-receipts`, otherwise
-`$HOME/.local/gpu_terminal/license-receipts` (the NSS home when `HOME` is
-unset). The admission helper receives exactly those three variables.
-`XDG_STATE_HOME` does not select the receipt store, and receipts filed under
-the earlier `$XDG_STATE_HOME/kilix-content/license-receipts/v1` layout are not
-read; those models must be accepted again. A host that relocates receipt
-storage must give Amp the same `KILIX_LICENSE_RECEIPTS` or `GPU_TERMINAL_HOME`
-(and `HOME`) as the licence screen that filed the receipts. The store must be
-the user's own directory with no group or other access.
-`KILIX_ENCODEC_THREADS` accepts `1` or `2` (default).
-Amp never installs or downloads a model. Missing receipts, undeclared assets,
-or incompatible bytes produce an error. The helper verifies the full admitted
-population, including its notices, then passes only the exact 9/4 native files
-as sealed descriptors. Native compiled graph hashes and runtime checks still
-apply. Admission repeats for every model load; graph-directory environment
-variables do not authorize normal playback. Regular input audio files are
-also copied into sealed private snapshots.
-
-The shared service uses one asynchronous native EnCodec source adapter and the
-existing preamp/EQ/volume/pan/device path. An owned same-executable worker loads
-models and decodes bounded records over a private socketpair; the UI performs
-only nonblocking IPC and owned-child reaping. Pause keeps bounded prefetch;
-stop or a source change kills only that worker. Workers inherit no application
-FDs beyond their private channel, stderr and an explicitly selected live input,
-and die if their parent exits.
-Each has a 2 GiB address-space ceiling, 512 MiB file-size ceiling and 64 FD
-ceiling. At most eight unreaped workers can exist during rapid source changes.
-
-The 24 kHz mono profile supports 3/6/12 kb/s; 48 kHz stereo supports
-3/6/12/24 kb/s. Seek starts at the verified preceding one-second mono epoch or
-47520-sample stereo boundary; stereo pre-roll is handled by the shared decoder.
-Old queued PCM is discarded and playback resumes after the worker acknowledges
-the actual boundary. Loading and queue starvation are displayed as `loading`
-and `buffering`. Stereo playback buffers at least 1.25 seconds before starting
-(or the entire remainder for a shorter file), with a two-second device-queue
-target. The selected thread count is reported through protocol 2; functional
-playback does not by itself assert hardware or listening qualification.
-
-For a live 24 kHz mono stream, use `--encodec-stdin` or
-`--encodec-socket /absolute/private/source.sock`, without a file playlist.
-Both controllers use the native framed input described in
-[LIVE-FORMAT.md](LIVE-FORMAT.md). These are binary EnCodec inputs, not raw PCM,
-local `.kenc` files or arbitrary network streams. Live playback shows elapsed
-time and `LIVE`, has no finite duration or seek control, and reports recovery,
-end and reconnect state. Stdin is single-use for the lifetime of the player.
-A Unix source can be reopened explicitly after disconnect; playback never
-reconnects or advances automatically. Live entries are omitted when saving a
-file playlist.
-
-For explicit native integration checks, build
-`make ENCODEC=1 build-encodec/native_encodec`, then run
-`python3 tests/run_encodec.py --test-binary build-encodec/native_encodec
---codec-command /path/to/kenc --mono-assets /path/to/mono
---stereo-assets /path/to/stereo --content-root /path/to/installed-content
---evidence-dir /path/to/new-evidence-directory`.
-The receipt environment and embedded catalog must admit the selected profiles;
-`--profile 24k` or `--profile 48k` narrows the run. Explicit
-`--development-only` replaces `--content-root` for byte/path worker fixtures
-and omits the installed shared-audio checks. It supplies no admission credit.
-The test creates synthetic local WAVs at all seven profile/rate combinations,
-checks exact worker/pre-DSP PCM against the shared decoder, and exercises seek,
-pause, EOF, cancellation and unrelated-child preservation. `make ENCODEC=1 test`
-also exercises malformed private worker replies using a separate test binary.
-`tests/headless_encodec.py` checks the real player socket with explicit fixtures;
-its dummy SDL output belongs only to that test process.
-Build `make ENCODEC=1 build-encodec/native_live` and pass the mono asset
-directory and a synthetic mono `.kenc` file with at least two seconds of audio
-plus the content root to test live input, recovery and the shared audio path.
-An explicit `--development-only` final argument instead omits the installed
-shared-audio check. Run
-`python3 tests/headless_live.py ./kilix-amp /path/to/mono.kenc
---evidence-dir /path/to/new-directory` for actual protocol-2 stdin and Unix
-reconnect controls. `KILIX_CONTENT_ROOT` and the matching receipt environment
-must select an admitted mono population for these actual-player checks.
-
-`tests/headless_admission_stereo.py` exercises the actual player against an
-installed asset/v3 content root and a kilix-license receipt store holding only
-the 48 kHz receipt. `--content-source` must be the kilix-content checkout the
-linked libkilix-encodec was built from; the install location and receipt name
-come from its verified catalog. It checks normal playback, repeated admission
-after receipt and file changes, wrong-receipt, notice and membership refusal,
-and unadmitted mono file/live refusal despite valid legacy graph directories.
-All mutations use private copies; the original installed population and
-receipts must remain byte-identical. `--probe build-encodec/admission_probe.so`
-records each admission result; with `--no-model-runtime` (a library built
-without ONNX) an admitted case must show admission returning the sealed files
-and the native loader then refusing, since both end in the same player error.
-
-## Building
-
-```bash
-make            # release build -> ./kilix-amp
-make debug      # ASan/UBSan debug build
-make test       # build + run the unit test suite
-```
+General playback needs the `kilix-mpv` executable on the system (or
+`KILIX_MPV`); `make runtime-check` verifies the installed mpv's decoder and
+filters without an audio device. `make install PREFIX="$HOME/.local"` installs
+the player, the meter library and their licence files. EnCodec `.kenc`
+playback is optional and built with `make ENCODEC=1`; see
+[docs/encodec.md](docs/encodec.md).
 
 ## Usage
 
@@ -194,70 +61,6 @@ On first start a default skin is generated at
 to `${XDG_CONFIG_HOME:-~/.config}/kilix-amp/kilix-amp.ini` (the same INI
 layout as nixamp's config). This lets desktop hosts give Kilix-Amp isolated,
 persistent storage without changing `HOME`.
-
-## Headless mode
-
-`--headless` runs the player with no windows, no skin and no video subsystem —
-only the decoder, the EQ chain and the playlist, driven over a Unix socket:
-
-```bash
-./kilix-amp --headless ~/Music/            # serve the default socket path
-./kilix-amp --socket /tmp/amp.sock track.flac   # explicit path (implies --headless)
-```
-
-The point is that there is **one** playback implementation. A text front end
-(`kilix-music` in kilix-tui-utils is the first) is a client of this socket
-rather than a second decoder that drifts from this one.
-
-The socket path is `$KILIX_AMP_SOCKET`, else `$XDG_RUNTIME_DIR/kilix-amp.sock`,
-else `~/.local/gpu_terminal/kilix/session/kilix-amp.sock`. It is created
-owner-only (0600). A second backend on a live socket is refused rather than
-fighting the first one for the audio device. A stale socket left by a killed
-run is also preserved and refused: after verifying that no Kilix Amp process is
-running, remove that exact socket explicitly and restart. This fail-closed rule
-avoids deleting a same-user replacement in a pathname race.
-
-Headless mode **reads** the settings file and never writes it, so it cannot
-overwrite the window layout or volume a windowed session is still using.
-
-### Control protocol
-
-One JSON object per line in, one per line out. Every reply carries `protocol`.
-Version 1 retains the existing file-player contract. Version 2 adds explicit
-source opens, live and model state, typed errors and exact wire timestamps.
-Clients first send a read-only version-2 `ping`; they can fall back to a
-version-1 `ping` when an older backend refuses. See
-[CONTROL-PROTOCOL.md](CONTROL-PROTOCOL.md) for version negotiation, strict
-framing and the complete version-2 fields.
-
-```console
-$ printf '{"cmd":"state","protocol":1}\n' | nc -U ~/.local/gpu_terminal/kilix/session/kilix-amp.sock
-{"protocol":1,"ok":true,"state":"playing","title":"Public Domain - Ode to Joy","file":"/home/…/ode-to-joy.ogg","pos":12.678,"len":17.777,"index":0,"count":1,"volume":80,"shuffle":false,"repeat":0}
-```
-
-| Command | Fields | Effect |
-|---|---|---|
-| `ping` | | liveness; version 2 also reports capabilities |
-| `state` | | current status (the reply shown above) |
-| `playlist` | | `items` (paths), `index`, `count` |
-| `play` | `index` (optional) | play that entry, else resume or start |
-| `toggle` | | play/pause |
-| `pause` / `stop` | | pause; stop and unload |
-| `next` / `previous` | | honours shuffle and repeat |
-| `seek` | `pos` (seconds) | absolute seek |
-| `volume` | `level` (0-100) | set volume |
-| `add` | `path` (file or directory) | append to the playlist |
-| `clear` | | stop and empty the playlist |
-| `shuffle` | `on` (optional bool) | set, or toggle when omitted |
-| `repeat` | `mode` (optional 0/1/2) | set, or cycle when omitted |
-| `quit` | | shut the backend down |
-| `open` (v2) | `source_type`, `path` | replace with an explicit file or live Unix source |
-
-Every mutating command answers with the state it produced, so a front end
-redraws in one round trip. Failures reply `"ok":false` with an `error` string;
-an unknown command is an error, never a silent no-op. `state` reports
-`loading` between accepting a track and the decoder opening it — opening a file
-is deferred to the next tick so a reply never waits on the decoder.
 
 ## Keyboard Shortcuts
 
@@ -279,64 +82,69 @@ is deferred to the next tick so a reply never waits on the decoder.
 | Alt+D | Toggle editor |
 | Ctrl+Z/Y/A | Editor: undo / redo / select all |
 
-## Architecture
+## How it works
 
-| Module | Purpose |
-|--------|---------|
-| `src/audio.c` | selects exactly one output engine: mpv for general media, native EnCodec for file/live sources |
-| `src/mpv_audio.c`, `meter/meter.c` | managed mpv IPC, filters, cancellable MIDI rendering and actual-output spectrum |
-| `src/native_audio.c` | retained EnCodec admission, decoder, pre-DSP diagnostics and SDL output |
-| `src/remote.c` | GUI controller of the shared protocol-2 service |
-| `src/headless.c` | `--headless`: the engine and playlist wired to the control socket, no windows |
-| `src/control.c` | non-blocking AF_UNIX server; line framing, so a quiet client cannot stall decoding |
-| `src/json.c` | bounded strict request validation, typed field readers and single-line writer |
-| `src/dsp.c` | in-house radix-2 FFT + biquad peaking filters |
-| `src/effects.c` | 21 editor effects/generators (scipy replaced in-house) |
-| `src/audio_data.c` | editor buffer with selection + undo/redo |
-| `src/zip.c` | minimal ZIP reader (stored + deflate via zlib) for .wsz |
-| `src/skin.c` | skin loader: BMP/PNG sheets, viscolor.txt, pledit.txt |
-| `src/skin_default.c` | procedural default-skin generator |
-| `src/font4x6.c` | in-house 4x6 pixel font (also baked into text.bmp) |
-| `src/render.c` | software-surface compositing + present at 1x/2x |
-| `src/widgets.c` | bitmap button/toggle/slider primitives + hit dispatch |
-| `src/spectrum.c` | 75-bar analyzer + oscilloscope |
-| `src/win_main.c` | main 275x116 player window |
-| `src/win_eq.c` | 10-band equalizer window |
-| `src/win_playlist.c` | resizable playlist editor |
-| `src/win_editor.c` | resizable waveform editor |
-| `src/dock.c` | window snapping/docking |
-| `src/menu.c` / `src/dialog.c` | in-house popup menus and modal param dialogs |
-| `src/filedialog.c` | zenity-backed file dialogs (text-prompt fallback) |
-| `src/playlist.c` | playlist model with M3U/PLS |
-| `src/config.c` | INI settings persistence |
-| `src/main.c` | component wiring, hotkeys, main loop |
-
-## Differences from the Python original
-
-- **No system tray** - the original used Qt's tray API; no lightweight
-  C equivalent exists without a GTK/appindicator dependency.
-- **Menus are flattened** - Qt cascading submenus become section headers
-  in a single popup.
-- **File dialogs use zenity** when installed, otherwise a text-entry path
-  prompt.
-- **Decoding is libsndfile-based** instead of GStreamer, with native
-  FluidSynth rendering for MIDI; general playback formats come from kilix-mpv
-  (no m4a/wma).
-- **Pitch shift uses linear resampling** instead of scipy's FFT resampler;
-  audibly equivalent for the +-12 semitone UI range.
-- Everything else - window layout, skin coordinates, EQ curve math,
-  playlist semantics, effect algorithms, config keys - is a direct port.
-
-## Running Tests
-
-```bash
-make test
+```
+ GUI (SDL2 skins)  ----+                       +--> kilix-mpv (JSON IPC) --> libkilix-meter.so --> spectrum
+ kilix-music (TUI) ----+--> Amp service ------+
+ any client -----------+   (protocol-2 socket) +--> native EnCodec worker (optional, .kenc / live)
 ```
 
-The suite (~5000 checks) covers the playlist model, M3U/PLS parsing, config
-persistence, ZIP/skin loading including zip-bomb rejection, the default-skin
-generator, FFT/biquad DSP, spectrum physics, all 21 effects/generators, the
-editor buffer undo/redo model, and the widget primitives.
+One per-user Amp service owns the playlist, position, volume, balance,
+ten-band EQ and repeat/shuffle state; the windowed player and `kilix-music`
+(in kilix-tui-utils) are both clients of it, so opening or closing a
+controller does not stop playback. General media plays through a managed
+`kilix-mpv` process over its private JSON IPC, with MIDI rendered by a
+FluidSynth worker first; the `libkilix-meter.so` filter passes audio unchanged
+and feeds the spectrum analyzer from the real output. `.kenc` files and live
+EnCodec streams use an optional native decoder in a separate worker process,
+and only for models admitted by the Kilix content catalog with a kilix-license
+receipt; Amp never downloads a model.
+
+The skin renderer, ZIP reader, FFT, biquad EQ, editor effects, menus and font
+are in-house C. Details: [docs/build-and-playback.md](docs/build-and-playback.md),
+[docs/headless.md](docs/headless.md), [docs/architecture.md](docs/architecture.md).
+
+## Documentation
+
+- [docs/build-and-playback.md](docs/build-and-playback.md): dependencies, the
+  mpv playback path, the shared service, building and tests.
+- [docs/headless.md](docs/headless.md): `--headless`, the socket path and the
+  control commands.
+- [docs/encodec.md](docs/encodec.md): EnCodec file and live playback, model
+  admission and integration checks.
+- [docs/architecture.md](docs/architecture.md): source modules and the
+  differences from the Python original.
+- [CONTROL-PROTOCOL.md](CONTROL-PROTOCOL.md): protocol versions 1 and 2.
+- [LIVE-FORMAT.md](LIVE-FORMAT.md): the framed live EnCodec input.
+- [samples/README.md](samples/README.md): the generated CC0 sample.
+- [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md): vendored Termixer, the
+  screenshot, the sample and linked libraries.
+
+## Related repositories
+
+- [kilix-mpv](https://github.com/itsmygithubacct/kilix-mpv#readme): the
+  player process behind general playback.
+- [kilix-encodec](https://github.com/itsmygithubacct/kilix-encodec#readme):
+  the optional native `.kenc` decoder library.
+- [kilix-license](https://github.com/itsmygithubacct/kilix-license#readme) and
+  [kilix-content](https://github.com/itsmygithubacct/kilix-content#readme):
+  model receipts, model assets and this application's catalog entry.
+- [kilix-tui-utils](https://github.com/itsmygithubacct/kilix-tui-utils#readme):
+  `kilix-music`, the text front end of the same service.
+- [kilix](https://github.com/itsmygithubacct/kilix#readme): the `kilix amp`
+  verb.
+
+## Part of Plebian-OS
+
+Kilix Amp is one of the repositories behind
+[Plebian-OS](https://github.com/itsmygithubacct/plebian-os#readme), a Debian
+install whose desktop is [Kilix](https://github.com/itsmygithubacct/kilix#readme)
+running the [Kilix 95](https://github.com/itsmygithubacct/kilix-95#readme)
+desktop through [Pleb](https://github.com/itsmygithubacct/pleb#readme).
+It is installed on demand from the Kilix content catalog, not shipped in the
+installer image. The map of every repository and how it ships is on the
+[components page](https://github.com/itsmygithubacct/plebian-os/blob/main/docs/components.md).
 
 ## Licence and notices
 
