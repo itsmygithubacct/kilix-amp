@@ -4,11 +4,13 @@ A pixel-faithful recreation of the classic Winamp 2.x music player, written
 in C11 with SDL2. This is a full rewrite of the Python/Qt "nixamp" project
 with the same feature set and window-for-window architecture.
 
-Installable on demand from the Kilix content catalog as `kilix-amp`
-(`kilix install kilix-amp`). `kilix amp` installs the pinned build on first use
-and starts the player; `kilix amp --headless` starts only its playback service.
-The catalog builds with `make all runtime-check ENCODEC=1` and runs the player
-as an X application in a Kilix pane.
+Ships in Plebian-OS as the Media Player: `pleb install` builds it at first boot
+(`kilix amp --install-only`) at the commit the Kilix content catalog pins for
+`kilix-amp`. Without that step it installs on first use: `kilix amp` builds the
+pinned commit if needed and starts the player (`kilix install kilix-amp`
+installs it without starting); `kilix amp --headless` starts only its playback
+service. The catalog builds with `make all runtime-check ENCODEC=1` and runs the
+player as an X application in a Kilix pane.
 
 ![kilix-amp playing Raleigh Soliloquy Pt. I](docs/screenshot.png)
 
@@ -142,8 +144,9 @@ Kilix Amp is one of the repositories behind
 install whose desktop is [Kilix](https://github.com/itsmygithubacct/kilix#readme)
 running the [Kilix 95](https://github.com/itsmygithubacct/kilix-95#readme)
 desktop through [Pleb](https://github.com/itsmygithubacct/pleb#readme).
-It is installed on demand from the Kilix content catalog, not shipped in the
-installer image. The map of every repository and how it ships is on the
+It is not in the installer image: `pleb install` builds it at first boot at
+the content catalog's pin, and `kilix amp` builds it on first use if that step
+did not. The map of every repository and how it ships is on the
 [components page](https://github.com/itsmygithubacct/plebian-os/blob/main/docs/components.md).
 
 ## Licence and notices
