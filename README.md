@@ -19,7 +19,7 @@ player as an X application in a Kilix pane.
 - **Classic Winamp 2.x UI** - Bitmap-based skin rendering with all the classic elements
 - **4-window layout** - Main player, Equalizer, Playlist, and waveform Editor
 - **Skin support** - Load .wsz skin files or skin directories (in-house ZIP reader)
-- **10-band EQ** - In-house biquad filter chain with presets (Rock, Pop, Classical, ...)
+- **10-band EQ** - Presets for kilix-mpv's audio filters and the native EnCodec biquad chain
 - **Spectrum analyzer** - 75-bar display with peak dots, oscilloscope mode (in-house FFT)
 - **Playlist** - M3U/PLS support, drag-and-drop, shuffle, repeat, sorting
 - **Editor** - waveform view with 16 effects + 5 generators, selection, undo/redo

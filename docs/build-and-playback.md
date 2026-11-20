@@ -50,6 +50,7 @@ may select an explicit executable; `KILIX_AMP_AUDIO_OUTPUT=null` is for tests.
 ```bash
 make            # release build -> ./kilix-amp
 make debug      # ASan/UBSan debug build
+make debug test # build and run the C tests with the same sanitizers
 make test       # build + run the unit test suite
 ```
 
@@ -57,9 +58,16 @@ make test       # build + run the unit test suite
 
 ```bash
 make test
+make test-integration
 ```
 
-The suite (~5000 checks) covers the playlist model, M3U/PLS parsing, config
+The C tests cover the playlist model, M3U/PLS parsing, config
 persistence, ZIP/skin loading including zip-bomb rejection, the default-skin
 generator, FFT/biquad DSP, spectrum physics, all 21 effects/generators, the
 editor buffer undo/redo model, and the widget primitives.
+
+The integration tests exercise the installed `kilix-mpv`, the SDL GUI and
+`kilix-music` on private control sockets. Set `KILIX_MUSIC_CHECKOUT` to the
+matching `kilix-tui-utils` checkout when testing from a separate worktree.
+Set `KILIX_TEST_ENCODEC_FILE` to an admitted local fixture to exercise switching
+between the two playback engines in one session.
