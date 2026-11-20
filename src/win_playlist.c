@@ -17,12 +17,12 @@ void playlist_window_init(PlaylistWindow *pw, KWindow *player, Skin *skin, Playl
     pw->anchor = -1;
     kbuf_init(&pw->buf, PL_MIN_W, PL_DEFAULT_H);
     text_renderer_init(&pw->text, skin_bitmap(skin, "text"));
+    playlist_window_on_playlist_changed(pw);
 }
 
 void playlist_window_destroy(PlaylistWindow *pw)
 {
-    free(pw->selected);
-    free(pw->selected_tracks);
+    free(pw->rows);
     kbuf_destroy(&pw->buf);
 }
 
@@ -37,74 +37,61 @@ static int max_scroll(const PlaylistWindow *pw)
     return KA_MAX(0, playlist_count(pw->playlist) - visible_items(pw));
 }
 
-static void ensure_selected_cap(PlaylistWindow *pw, int n)
+static int compare_entry_id(const void *left, const void *right)
 {
-    if (n <= pw->selected_cap)
-        return;
-    pw->selected = realloc(pw->selected, sizeof(bool) * (size_t)n);
-    if (!pw->selected)
-        abort();
-    memset(pw->selected + pw->selected_cap, 0,
-           sizeof(bool) * (size_t)(n - pw->selected_cap));
-    pw->selected_cap = n;
-}
-
-static bool is_selected(const PlaylistWindow *pw, int i)
-{
-    return i >= 0 && i < pw->selected_cap && pw->selected[i];
-}
-
-/* Snapshot the Track pointers currently selected (stable identity). */
-static void sync_selected_tracks(PlaylistWindow *pw)
-{
-    free(pw->selected_tracks);
-    pw->selected_tracks = NULL;
-    pw->selected_track_count = 0;
-    int n = playlist_count(pw->playlist);
-    int count = 0;
-    for (int i = 0; i < KA_MIN(n, pw->selected_cap); i++)
-        if (pw->selected[i])
-            count++;
-    if (count == 0)
-        return;
-    pw->selected_tracks = malloc(sizeof(Track *) * (size_t)count);
-    if (!pw->selected_tracks)
-        abort();
-    for (int i = 0; i < KA_MIN(n, pw->selected_cap); i++)
-        if (pw->selected[i])
-            pw->selected_tracks[pw->selected_track_count++] =
-                playlist_track(pw->playlist, i);
+    const PlaylistRow *a = left, *b = right;
+    return (a->entry_id > b->entry_id) - (a->entry_id < b->entry_id);
 }
 
 void playlist_window_on_playlist_changed(PlaylistWindow *pw)
 {
     pw->scroll_offset = KA_CLAMP(pw->scroll_offset, 0, max_scroll(pw));
-
-    /* Remap selection to new indices by Track identity. */
-    int n = playlist_count(pw->playlist);
-    ensure_selected_cap(pw, KA_MAX(n, 1));
-    memset(pw->selected, 0, sizeof(bool) * (size_t)pw->selected_cap);
-    for (int i = 0; i < n; i++) {
-        Track *t = playlist_track(pw->playlist, i);
-        for (int k = 0; k < pw->selected_track_count; k++) {
-            if (pw->selected_tracks[k] == t) {
-                pw->selected[i] = true;
-                break;
-            }
-        }
+    PlaylistRow *old = pw->rows;
+    int selected_count = 0;
+    long long anchor_id = 0;
+    long long pid = playlist_snapshot_pid(pw->playlist);
+    if (pid == pw->service_pid) {
+        if (pw->anchor >= 0)
+            anchor_id = old[pw->anchor].entry_id;
+        for (int i = 0; i < pw->row_count; i++)
+            if (old[i].selected && old[i].entry_id > 0)
+                old[selected_count++] = old[i];
+        if (selected_count > 1)
+            qsort(old, (size_t)selected_count, sizeof(*old), compare_entry_id);
+    } else {
+        pw->current_entry_id = 0;
     }
-    sync_selected_tracks(pw);
 
-    if (pw->anchor >= n)
-        pw->anchor = -1;
+    pw->service_pid = pid;
+    pw->anchor = -1;
+    pw->row_count = playlist_count(pw->playlist);
+    pw->rows = calloc((size_t)pw->row_count, sizeof(*pw->rows));
+    if (pw->row_count && !pw->rows)
+        abort();
+    for (int i = 0; i < pw->row_count; i++) {
+        PlaylistRow *row = &pw->rows[i];
+        row->entry_id = playlist_track(pw->playlist, i)->entry_id;
+        if (selected_count)
+            row->selected = bsearch(row, old, (size_t)selected_count,
+                                    sizeof(*old), compare_entry_id) != NULL;
+        if (anchor_id > 0 && row->entry_id == anchor_id)
+            pw->anchor = i;
+    }
+    free(old);
 }
 
 void playlist_window_on_current_changed(PlaylistWindow *pw, int idx)
 {
-    /* Empty service snapshots have no current row. Scrolling to -1 would
-     * make the next render dereference a nonexistent Track. */
-    if (idx < 0) return;
-    /* Auto-scroll to keep current track visible */
+    Track *current = playlist_track(pw->playlist, idx);
+    if (!current) {
+        pw->current_entry_id = 0;
+        return;
+    }
+    /* A queue or metadata refresh can report the same playing entry again.
+     * Keep the user's scroll position until playback changes tracks. */
+    if (current->entry_id > 0 && current->entry_id == pw->current_entry_id)
+        return;
+    pw->current_entry_id = current->entry_id;
     if (idx < pw->scroll_offset)
         pw->scroll_offset = idx;
     else if (idx >= pw->scroll_offset + visible_items(pw))
@@ -137,12 +124,12 @@ static void draw_items(PlaylistWindow *pw)
     SkinColors *colors = &pw->skin->colors;
     for (int i = 0; i < visible_items(pw); i++) {
         int idx = pw->scroll_offset + i;
-        if (idx >= playlist_count(pw->playlist))
+        if (idx >= pw->row_count)
             break;
         Track *track = playlist_track(pw->playlist, idx);
         int y = list_y + i * PL_ITEM_H;
 
-        if (is_selected(pw, idx))
+        if (pw->rows[idx].selected)
             ksurf_fill(buf, KRECT(list_x, y, list_w, PL_ITEM_H),
                        colors->pl_selectedbg);
 
@@ -260,52 +247,41 @@ void playlist_window_render(PlaylistWindow *pw)
 
 static void remove_selected(PlaylistWindow *pw)
 {
-    int n = playlist_count(pw->playlist);
-    int *indices = malloc(sizeof(int) * (size_t)KA_MAX(n, 1));
-    if (!indices)
+    int *indices = malloc(sizeof(*indices) * (size_t)pw->row_count);
+    if (pw->row_count && !indices)
         abort();
     int count = 0;
-    for (int i = 0; i < KA_MIN(n, pw->selected_cap); i++)
-        if (pw->selected[i])
+    for (int i = 0; i < pw->row_count; i++)
+        if (pw->rows[i].selected)
             indices[count++] = i;
-    /* Clear the identity snapshot before the model change so the remap in
-     * on_playlist_changed drops everything. */
-    pw->selected_track_count = 0;
-    memset(pw->selected, 0, sizeof(bool) * (size_t)pw->selected_cap);
-    pw->anchor = -1;
-    playlist_remove(pw->playlist, indices, count);
+    if (count)
+        playlist_remove(pw->playlist, indices, count);
     free(indices);
 }
 
 static void select_all(PlaylistWindow *pw)
 {
-    int n = playlist_count(pw->playlist);
-    ensure_selected_cap(pw, KA_MAX(n, 1));
-    for (int i = 0; i < n; i++)
-        pw->selected[i] = true;
-    sync_selected_tracks(pw);
+    for (int i = 0; i < pw->row_count; i++)
+        pw->rows[i].selected = true;
 }
 
 static void clear_selection(PlaylistWindow *pw)
 {
-    memset(pw->selected, 0, sizeof(bool) * (size_t)pw->selected_cap);
-    pw->selected_track_count = 0;
+    for (int i = 0; i < pw->row_count; i++)
+        pw->rows[i].selected = false;
     pw->anchor = -1;
 }
 
 static void invert_selection(PlaylistWindow *pw)
 {
-    int n = playlist_count(pw->playlist);
-    ensure_selected_cap(pw, KA_MAX(n, 1));
-    for (int i = 0; i < n; i++)
-        pw->selected[i] = !pw->selected[i];
-    sync_selected_tracks(pw);
+    for (int i = 0; i < pw->row_count; i++)
+        pw->rows[i].selected = !pw->rows[i].selected;
 }
 
 static int first_selected(PlaylistWindow *pw)
 {
-    for (int i = 0; i < pw->selected_cap; i++)
-        if (pw->selected[i])
+    for (int i = 0; i < pw->row_count; i++)
+        if (pw->rows[i].selected)
             return i;
     return -1;
 }
@@ -363,7 +339,6 @@ static void show_context_menu(PlaylistWindow *pw)
         remove_selected(pw);
         break;
     case M_CLEAR:
-        clear_selection(pw);
         playlist_clear(pw->playlist);
         break;
     case M_SEL_ALL:
@@ -439,30 +414,27 @@ void playlist_window_mouse_press(PlaylistWindow *pw, int x, int y,
     if (button == SDL_BUTTON_LEFT && ly >= list_y && ly < list_y + list_h &&
         lx >= 12 && lx < pw->buf.w - 20) {
         int item_idx = pw->scroll_offset + (ly - list_y) / PL_ITEM_H;
-        if (item_idx >= 0 && item_idx < playlist_count(pw->playlist)) {
+        if (item_idx >= 0 && item_idx < pw->row_count) {
             if (clicks >= 2) {
                 if (pw->cbs.track_activated)
                     pw->cbs.track_activated(pw->cbs.ud, item_idx);
                 return;
             }
-            ensure_selected_cap(pw, playlist_count(pw->playlist));
             if (mod & KMOD_CTRL) {
-                pw->selected[item_idx] = !pw->selected[item_idx];
+                pw->rows[item_idx].selected = !pw->rows[item_idx].selected;
                 pw->anchor = item_idx;
             } else if (mod & KMOD_SHIFT) {
                 int anchor = pw->anchor >= 0 ? pw->anchor : item_idx;
-                memset(pw->selected, 0,
-                       sizeof(bool) * (size_t)pw->selected_cap);
+                clear_selection(pw);
+                pw->anchor = anchor;
                 for (int i = KA_MIN(anchor, item_idx);
                      i <= KA_MAX(anchor, item_idx); i++)
-                    pw->selected[i] = true;
+                    pw->rows[i].selected = true;
             } else {
-                memset(pw->selected, 0,
-                       sizeof(bool) * (size_t)pw->selected_cap);
-                pw->selected[item_idx] = true;
+                clear_selection(pw);
+                pw->rows[item_idx].selected = true;
                 pw->anchor = item_idx;
             }
-            sync_selected_tracks(pw);
         }
     }
 

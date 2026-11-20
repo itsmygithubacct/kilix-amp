@@ -344,6 +344,8 @@ static void hl_write_playlist(Headless *h, JsonBuf *reply, bool with_status)
     for (int i = 0; i < count; i++) {
         Track *t = playlist_track(h->playlist, i);
         json_obj_begin(reply);
+        if (h->reply_protocol == 2)
+            json_kv_int(reply, "entry_id", t->entry_id);
         json_kv_str(reply, "file", t->filepath);
         json_kv_str(reply, "title", t->title);
         json_kv_str(reply, "artist", t->artist);
@@ -377,7 +379,7 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
 
     /* Optional fields have to be correctly typed when present; they must not
      * accidentally select the no-argument toggle/resume behavior. */
-    const char *integers[] = {"index", "level", "mode", "queue_revision", "band", "from", "to"};
+    const char *integers[] = {"index", "level", "mode", "queue_revision", "queue_pid", "band", "from", "to"};
     for (size_t i = 0u; i < KA_LEN(integers); ++i) {
         if (json_has_key(request, integers[i]) && !json_get_int(request, integers[i], &number)) {
             hl_refuse(h, reply, "INVALID_REQUEST", "integer argument has the wrong type"); return;
@@ -389,8 +391,9 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
 
     /* An old selection must never address a different track after another
      * controller reorders the queue. Legacy clients may omit the revision. */
-    long long revision;
-    if (json_get_int(request, "queue_revision", &revision) && revision != h->revision) {
+    long long revision, pid;
+    if ((json_get_int(request, "queue_revision", &revision) && revision != h->revision) ||
+        (json_get_int(request, "queue_pid", &pid) && pid != getpid())) {
         hl_refuse(h, reply, "STALE_QUEUE", "playlist changed; refresh and try again");
         hl_write_status(h, reply);
         return;

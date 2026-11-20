@@ -19,6 +19,11 @@ typedef struct {
 } PlaylistWindowCallbacks;
 
 typedef struct {
+    long long entry_id;
+    bool selected;
+} PlaylistRow;
+
+typedef struct {
     KWindow *player;
     KBuffer buf;
     Skin *skin;
@@ -27,12 +32,9 @@ typedef struct {
     PlaylistWindowCallbacks cbs;
 
     int scroll_offset;
-    /* Selection as index flags plus stable Track-pointer snapshot for
-     * remapping after reorder/remove. */
-    bool *selected;
-    int selected_cap;
-    Track **selected_tracks;
-    int selected_track_count;
+    PlaylistRow *rows;
+    int row_count;
+    long long service_pid, current_entry_id;
     int anchor; /* -1 = none */
 
     bool resizing;

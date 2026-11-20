@@ -372,13 +372,6 @@ DEF_DRAG(ed_win, editor)
 static void on_playlist_changed(void *ud)
 {
     App *app = ud;
-    /* A service snapshot replaces Track storage. Do not reuse pointer-based
-     * selections from an older snapshot to address newly allocated entries. */
-    free(app->pl_win.selected_tracks);
-    app->pl_win.selected_tracks = NULL;
-    app->pl_win.selected_track_count = 0;
-    if (app->pl_win.selected)
-        memset(app->pl_win.selected, 0, (size_t)app->pl_win.selected_cap * sizeof(bool));
     playlist_window_on_playlist_changed(&app->pl_win);
 }
 

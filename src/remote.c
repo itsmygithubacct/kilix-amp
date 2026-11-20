@@ -202,11 +202,10 @@ static void absorb(Remote *r, const char *reply)
     long long revision = -1, pid = 0;
     json_get_int(reply, "queue_revision", &revision);
     json_get_int(reply, "pid", &pid);
-    if (revision != r->revision || pid != r->service_pid) {
+    if (revision != r->revision || pid != playlist_snapshot_pid(r->playlist)) {
         char *listing = exchange(r, "{\"cmd\":\"snapshot\",\"protocol\":2}");
         if (listing && playlist_apply_snapshot(r->playlist, listing)) {
             json_get_int(listing, "queue_revision", &r->revision);
-            json_get_int(listing, "pid", &r->service_pid);
             absorb(r, listing);
             free(listing);
             return;
@@ -283,13 +282,19 @@ void remote_request(Remote *r, JsonBuf *request)
     free(request_reply(r, request));
 }
 
+static void queue_guard(JsonBuf *request, long long pid, long long revision)
+{
+    json_kv_int(request, "queue_pid", pid);
+    json_kv_int(request, "queue_revision", revision);
+}
+
 static void queue_edit(void *ud, JsonBuf *request)
 {
     Remote *r = ud;
     char cmd[32] = "";
     json_get_str(json_text(request), "cmd", cmd, sizeof(cmd));
     if (strcmp(cmd, "add") != 0)
-        json_kv_int(request, "queue_revision", r->revision);
+        queue_guard(request, playlist_snapshot_pid(r->playlist), r->revision);
     remote_request(r, request);
 }
 
@@ -329,16 +334,16 @@ void remote_boolean(Remote *r, const char *cmd, const char *key, bool value)
     json_kv_bool(&j, key, value);
     remote_request(r, &j); json_free(&j);
 }
-static void play_at_revision(Remote *r, int index, long long revision)
+static void play_at_revision(Remote *r, int index, long long pid, long long revision)
 {
     JsonBuf j = command("play");
     json_kv_int(&j, "index", index);
-    json_kv_int(&j, "queue_revision", revision);
+    queue_guard(&j, pid, revision);
     remote_request(r, &j); json_free(&j);
 }
 void remote_play_index(Remote *r, int index)
 {
-    play_at_revision(r, index, r->revision);
+    play_at_revision(r, index, playlist_snapshot_pid(r->playlist), r->revision);
 }
 
 /* Bind both the append position and the subsequent play to the service's
@@ -349,21 +354,22 @@ static bool add_and_play(Remote *r, const char *path)
         int first = playlist_count(r->playlist);
         JsonBuf add = command("add");
         json_kv_str(&add, "path", path);
-        json_kv_int(&add, "queue_revision", r->revision);
+        queue_guard(&add, playlist_snapshot_pid(r->playlist), r->revision);
         char *reply = request_reply(r, &add);
         json_free(&add);
         if (!reply) return false;
 
         bool ok = false;
-        long long revision;
+        long long revision, pid;
         char code[32];
         bool added = json_get_bool(reply, "ok", &ok) && ok &&
-                     json_get_int(reply, "queue_revision", &revision);
+                     json_get_int(reply, "queue_revision", &revision) &&
+                     json_get_int(reply, "pid", &pid);
         bool stale = json_get_str(reply, "error_code", code, sizeof(code)) &&
                      strcmp(code, "STALE_QUEUE") == 0;
         free(reply);
         if (added) {
-            play_at_revision(r, first, revision);
+            play_at_revision(r, first, pid, revision);
             return true;
         }
         if (!stale) return false;

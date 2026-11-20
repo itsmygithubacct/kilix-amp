@@ -14,6 +14,7 @@ enum {
 };
 
 typedef struct {
+    long long entry_id; /* unique within the playback service, zero if unavailable */
     char *filepath;
     char *title;    /* file stem when no tag/EXTINF title known */
     char *artist;   /* "" if unknown */
@@ -37,6 +38,7 @@ typedef struct Playlist Playlist;
 typedef void (*PlaylistRemoteFn)(void *ud, JsonBuf *request);
 void playlist_set_remote(Playlist *pl, PlaylistRemoteFn sink, void *ud);
 bool playlist_apply_snapshot(Playlist *pl, const char *reply);
+long long playlist_snapshot_pid(const Playlist *pl);
 
 /* Change callbacks (both optional). */
 typedef void (*PlaylistChangedFn)(void *ud);

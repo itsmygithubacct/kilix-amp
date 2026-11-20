@@ -11,7 +11,7 @@ typedef struct {
     char command_error[512];
     uint32_t error_until;
     int position, duration, volume, balance, index;
-    long long revision, service_pid;
+    long long revision;
     bool connected, eq_enabled, shuffle;
     int repeat;
     double preamp;

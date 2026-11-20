@@ -42,7 +42,7 @@ def wait_for(predicate, timeout=5):
 
 
 def xdotool(env, *args):
-    return subprocess.check_output(["xdotool", *map(str, args)], env=env, text=True).strip()
+    return subprocess.check_output(["xdotool", *map(str, args)], env=env, text=True, timeout=5).strip()
 
 
 def window_geometry(env, window):
@@ -237,6 +237,22 @@ class SharedPlayback(unittest.TestCase):
         self.command("play")
         self.assertEqual(self.playing()["file"], str(self.other))
 
+    def test_restarted_service_refuses_an_edit_from_the_previous_queue(self):
+        first = self.start()
+        self.command("add", path=str(self.tone))
+        old = self.command("snapshot")
+        self.command("quit")
+        self.assertEqual(first.wait(timeout=5), 0)
+        self.start()
+        self.command("add", path=str(self.other))
+        new = self.command("snapshot")
+        self.assertEqual(old["queue_revision"], new["queue_revision"])
+        self.assertNotEqual(old["pid"], new["pid"])
+        reply = self.command("remove", indices=[0], queue_pid=old["pid"],
+                             queue_revision=old["queue_revision"])
+        self.assertEqual(reply.get("error_code"), "STALE_QUEUE")
+        self.assertEqual(self.command("playlist")["items"], [str(self.other)])
+
     def test_large_playlist_reaches_both_clients_with_metadata(self):
         listing = self.path / "large.m3u"
         listing.write_text("#EXTM3U\n" + "".join(
@@ -372,6 +388,33 @@ class SharedPlayback(unittest.TestCase):
         gui = self.spawn([str(AMP)], large)
         window = self.window(gui, large)
         self.assertEqual(window_geometry(large, window)[2:], (950, 992))
+
+    def test_gui_removes_the_selected_duplicate_after_another_client_reorders(self):
+        listing = self.path / "duplicates.m3u"
+        listing.write_text("#EXTM3U\n" + "".join(
+            f"#EXTINF:8,{label}\n{self.tone}\n" for label in ("First", "Second", "Third")))
+        self.start()
+        self.assertTrue(self.command("add", path=str(listing))["ok"])
+        env = self.display()
+        gui = self.spawn([str(AMP)], env)
+        window = self.window(gui, env)
+        xdotool(env, "windowfocus", "--sync", window, "key", "Down")
+        wait_for(lambda: self.command("state")["volume"] == 75)
+        xdotool(env, "mousemove", "--window", window, 50, 168, "click", 1)
+        self.assertTrue(self.command("reverse")["ok"])
+        self.assertTrue(self.command("add", path=str(self.other))["ok"])
+        xdotool(env, "key", "Up")
+        wait_for(lambda: self.command("state")["volume"] == 80)
+
+        # Open the context menu on empty space and remove the selected row.
+        xdotool(env, "mousemove", "--window", window, 50, 250, "click", 3)
+        menu = xdotool(env, "search", "--sync", "--all", "--onlyvisible",
+                       "--pid", gui.pid, "--name", "^menu$")
+        xdotool(env, "mousemove", "--window", menu, 38, 61, "click", 1)
+        wait_for(lambda: self.command("state")["count"] == 3)
+        rows = self.command("snapshot")["tracks"]
+        self.assertEqual([row["title"] for row in rows[:2]], ["Second", "First"])
+        self.assertEqual(rows[2]["file"], str(self.other))
 
     def test_gui_opens_first_selected_track_after_another_client_appends(self):
         self.start(self.tone)
