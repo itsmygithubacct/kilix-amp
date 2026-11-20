@@ -326,6 +326,22 @@ class SharedPlayback(unittest.TestCase):
         status = self.playing()
         self.assertAlmostEqual(status["len"], 8, delta=.1)
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required to generate audio containers")
+    def test_mpv_audio_containers(self):
+        self.start()
+        for suffix, codec, muxer in (("m4b", "aac", "mp4"), ("mka", "flac", "matroska"),
+                                     ("weba", "libopus", "webm")):
+            with self.subTest(suffix=suffix):
+                track = self.path / f"track.{suffix}"
+                subprocess.run(["ffmpeg", "-v", "error", "-i", str(self.tone), "-t", "2",
+                                "-c:a", codec, "-f", muxer, str(track)], check=True)
+                reply = self.command("open", source_type="file", path=str(track))
+                self.assertTrue(reply["ok"], reply)
+                status = self.playing()
+                self.assertEqual(status["file"], str(track))
+                self.assertEqual(status["backend"], "kilix-mpv")
+                self.assertAlmostEqual(status["len"], 2, delta=.1)
+
     def test_rapid_replacement_and_stop_ignore_old_mpv_events(self):
         self.start(self.tone, self.other)
         self.playing()

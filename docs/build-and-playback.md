@@ -23,7 +23,8 @@ Or run:
 ```
 
 General music playback uses the installed `kilix-mpv` executable, including
-MP3, FLAC, Ogg/Opus, AAC/M4A and WAV. MIDI is rendered by a cancellable
+MP3, FLAC, Ogg/Opus, AAC/M4A, M4B audiobooks, Matroska audio (`.mka`),
+WebM audio (`.weba`) and WAV. MIDI is rendered by a cancellable
 FluidSynth worker and then played through mpv. Set
 `KILIX_AMP_SOUNDFONT=/path/to.sf2` to select a SoundFont. libsndfile remains a
 build dependency for the audio editor and the native engine.
