@@ -220,9 +220,9 @@ bool playlist_shuffle(const Playlist *pl) { return pl->shuffle; }
 
 void playlist_set_shuffle(Playlist *pl, bool on)
 {
-    pl->shuffle = on;
-    if (on)
+    if (on && (!pl->shuffle || !pl->shuffle_order))
         generate_shuffle_order(pl);
+    pl->shuffle = on;
 }
 
 void playlist_toggle_shuffle(Playlist *pl)
@@ -510,6 +510,14 @@ void playlist_clear(Playlist *pl)
     emit_changed(pl);
 }
 
+static int index_after_move(int index, int from, int to)
+{
+    if (index == from) return to;
+    if (from < index && index <= to) return index - 1;
+    if (to <= index && index < from) return index + 1;
+    return index;
+}
+
 void playlist_move(Playlist *pl, int from_idx, int to_idx)
 {
     if (pl->remote) {
@@ -533,12 +541,11 @@ void playlist_move(Playlist *pl, int from_idx, int to_idx)
         memmove(&pl->tracks[to_idx + 1], &pl->tracks[to_idx],
                 (size_t)(from_idx - to_idx) * sizeof(Track));
     pl->tracks[to_idx] = t;
-    if (pl->current_index == from_idx)
-        pl->current_index = to_idx;
-    else if (from_idx < pl->current_index && pl->current_index <= to_idx)
-        pl->current_index--;
-    else if (to_idx <= pl->current_index && pl->current_index < from_idx)
-        pl->current_index++;
+    pl->current_index = index_after_move(pl->current_index, from_idx, to_idx);
+    if (pl->shuffle && pl->shuffle_order) {
+        for (int i = 0; i < pl->count; i++)
+            pl->shuffle_order[i] = index_after_move(pl->shuffle_order[i], from_idx, to_idx);
+    }
     emit_changed(pl);
 }
 
@@ -559,6 +566,14 @@ Track *playlist_next_track(Playlist *pl)
         if (pl->shuffle_pos >= pl->count) {
             if (pl->repeat == REPEAT_ALL) {
                 generate_shuffle_order(pl);
+                /* The current track is at zero. Start the new cycle on a
+                 * different track, keeping each entry in the cycle once. */
+                if (pl->count > 1) {
+                    int next = 1 + rand() % (pl->count - 1);
+                    int first = pl->shuffle_order[0];
+                    pl->shuffle_order[0] = pl->shuffle_order[next];
+                    pl->shuffle_order[next] = first;
+                }
                 pl->shuffle_pos = 0;
             } else {
                 pl->shuffle_pos = pl->count - 1;

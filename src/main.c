@@ -706,12 +706,12 @@ int main(int argc, char **argv)
         fprintf(stderr, "A live Unix source needs a bounded absolute socket path\n"); return 2;
     }
 
+    srand((unsigned)time(NULL) ^ (unsigned)getpid());
+
     /* Before any video or skin work: headless must run where no display
      * exists at all. */
     if (headless)
         return headless_run(files, n_files, socket_arg, live_kind, live_path);
-
-    srand((unsigned)time(NULL));
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "kilix-amp: SDL init failed: %s\n", SDL_GetError());
