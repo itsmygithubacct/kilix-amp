@@ -1,3 +1,10 @@
+kilix-amp (0.20261029+packaging3) UNRELEASED; urgency=medium
+
+  * Ship the docked player with kilix-mpv for ordinary playback and the
+    native kilix-encodec decoder for files and live input.
+
+ -- itsmygithubacct <itsmygithubacct@users.noreply.github.com>  Fri, 20 Nov 2026 18:42:00 +0000
+
 kilix-amp (0.20261029+packaging2) UNRELEASED; urgency=medium
 
   * Build termixer from the crates vendored in the source, with no network,

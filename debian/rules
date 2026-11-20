@@ -5,6 +5,7 @@
 
 DEB_BUILD_OPTIONS += noautodbgsym
 export DEB_BUILD_OPTIONS
+export ENCODEC = 1
 
 %:
 	dh $@
@@ -25,3 +26,7 @@ override_dh_auto_install:
 	test -x debian/kilix-amp/usr/bin/kilix-amp
 	test -x debian/kilix-amp/usr/bin/termixer
 	test -f debian/kilix-amp/usr/lib/kilix-amp/libkilix-meter.so
+
+override_dh_shlibdeps:
+	dh_shlibdeps
+	grep -w 'libkilix-encodec' debian/kilix-amp.substvars
