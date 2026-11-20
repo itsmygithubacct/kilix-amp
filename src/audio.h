@@ -52,6 +52,8 @@ void audio_play(AudioEngine *ae);
 void audio_pause(AudioEngine *ae); /* toggles pause <-> resume */
 void audio_set_paused(AudioEngine *ae, bool paused);
 void audio_stop(AudioEngine *ae);
+/* Retire the source and its metadata when its queue entry is discarded. */
+void audio_unload(AudioEngine *ae);
 void audio_seek(AudioEngine *ae, int position_ms);
 void audio_set_volume(AudioEngine *ae, int volume);   /* 0-100 */
 void audio_set_balance(AudioEngine *ae, int balance); /* -100..100 */

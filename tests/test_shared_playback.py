@@ -207,6 +207,25 @@ class SharedPlayback(unittest.TestCase):
         self.assertEqual(client.command("playlist")["items"], [str(self.tone)])
         self.assertEqual(self.command("state")["state"], "stopped")
 
+    def test_removing_playing_track_discards_its_source_and_duration(self):
+        self.start(self.tone, self.other)
+        self.playing()
+        wait_for(lambda: self.command("snapshot")["tracks"][0]["duration"] == 8)
+        stopped = self.command("remove", indices=[0])
+        self.assertTrue(stopped["ok"])
+        self.assertEqual(stopped["state"], "stopped")
+        self.assertEqual(stopped["track_title"], self.other.stem)
+        self.assertEqual(stopped["source_type"], "none")
+        self.assertEqual(stopped["file"], "")
+        self.assertIsNone(stopped["len"])
+        self.assertEqual(stopped["sample_rate"], 0)
+        self.assertFalse(stopped["seekable"])
+        time.sleep(.2)  # Allow position notifications from the idle engine.
+        self.assertEqual(self.command("snapshot")["tracks"][0]["duration"], -1)
+        self.assertEqual(self.command("state", protocol=1)["file"], "")
+        self.command("play")
+        self.assertEqual(self.playing()["file"], str(self.other))
+
     def test_large_playlist_reaches_both_clients_with_metadata(self):
         listing = self.path / "large.m3u"
         listing.write_text("#EXTM3U\n" + "".join(

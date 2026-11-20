@@ -10,6 +10,7 @@ void mpv_audio_load(MpvAudioEngine *ae, const char *filepath);
 void mpv_audio_play(MpvAudioEngine *ae);
 void mpv_audio_pause(MpvAudioEngine *ae); /* toggles pause <-> resume */
 void mpv_audio_stop(MpvAudioEngine *ae);
+void mpv_audio_unload(MpvAudioEngine *ae);
 void mpv_audio_seek(MpvAudioEngine *ae, int position_ms);
 void mpv_audio_set_volume(MpvAudioEngine *ae, int volume);   /* 0-100 */
 void mpv_audio_set_balance(MpvAudioEngine *ae, int balance); /* -100..100 */

@@ -230,14 +230,19 @@ static void load_media(MpvAudioEngine *a, const char *path)
     send_command(a, args, 3, 100 + a->generation);
     property(a, "pause", a->want_play ? "no" : "yes");
 }
-void mpv_audio_load(MpvAudioEngine *a, const char *path)
+void mpv_audio_unload(MpvAudioEngine *a)
 {
     mpv_audio_stop(a);
     free(a->current_file);
-    a->current_file = ka_strdup(path);
+    a->current_file = NULL;
     a->duration = 0;
     a->last_error[0] = 0;
     memset(&a->tags, 0, sizeof(a->tags));
+}
+void mpv_audio_load(MpvAudioEngine *a, const char *path)
+{
+    mpv_audio_unload(a);
+    a->current_file = ka_strdup(path);
     if (!start_mpv(a)) return;
     state(a, "loading");
     char *ext = ka_ext_lower(path);

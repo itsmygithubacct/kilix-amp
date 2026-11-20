@@ -57,6 +57,12 @@ static void select_engine(AudioEngine *a, bool native)
     for (int i = 0; i < 10; i++) audio_set_eq_band(a, i, a->eq[i]);
 }
 
+void audio_unload(AudioEngine *a)
+{
+    select_engine(a, false);
+    mpv_audio_unload(a->mpv);
+}
+
 void audio_load(AudioEngine *a, const char *path)
 {
     char *ext = ka_ext_lower(path);

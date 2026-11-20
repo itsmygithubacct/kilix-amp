@@ -59,6 +59,15 @@ static void hl_set_title_from_track(Headless *h, const Track *track)
     free(disp);
 }
 
+static void hl_unload(Headless *h)
+{
+    h->pending_play = h->pending_pause = false;
+    audio_unload(h->audio);
+    h->auto_skip_count = 0;
+    h->last_error[0] = 0;
+    memset(h->spectrum, 0, sizeof(h->spectrum));
+}
+
 /* Queues the current track; the load itself happens on the next tick. */
 static bool hl_queue_current(Headless *h)
 {
@@ -172,6 +181,7 @@ static void on_state_changed(void *ud, const char *state)
 static void on_tags(void *ud, const AudioTags *tags)
 {
     Headless *h = ud;
+    if (h->pending_play) return;
     Track *track = playlist_current_track(h->playlist);
     if (!track)
         return;
@@ -202,6 +212,7 @@ static void on_spectrum(void *ud, const float *values, int n)
 static void on_position(void *ud, int pos, int duration)
 {
     Headless *h = ud;
+    if (h->pending_play) return;
     if (pos > 0 && strcmp(audio_state(h->audio), "playing") == 0)
         h->auto_skip_count = 0;
     Track *t = playlist_current_track(h->playlist);
@@ -228,9 +239,6 @@ static void hl_write_status(Headless *h, JsonBuf *reply)
     int dur_ms = audio_get_duration_ms(h->audio);
     const char *file = audio_current_file(h->audio);
     AudioSourceInfo info = audio_source_info(h->audio);
-    if (h->reply_protocol == 2 && playlist_count(h->playlist) == 0) {
-        file = NULL; info = (AudioSourceInfo){0}; pos_ms = dur_ms = 0;
-    }
     if (h->reply_protocol == 2 && h->pending_play) {
         Track *pending = playlist_current_track(h->playlist);
         if (pending) {
@@ -437,8 +445,7 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
         if (kind == KA_ENCODEC_SOCKET && (path[0] != '/' || strlen(path) >= 108u)) {
             hl_refuse(h, reply, "INVALID_REQUEST", "Unix source needs a bounded absolute socket path"); return;
         }
-        audio_stop(h->audio);
-        h->pending_play = false;
+        hl_unload(h);
         playlist_clear(h->playlist);
         if (kind == KA_ENCODEC_FILE) playlist_add_file(h->playlist, path);
         else playlist_add_live(h->playlist, path, kind);
@@ -552,7 +559,7 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
             if (number == playlist_current_index(h->playlist)) removes_current = true;
         }
         free(array);
-        if (removes_current) { h->pending_play = false; audio_stop(h->audio); }
+        if (removes_current) hl_unload(h);
         playlist_remove(h->playlist, indices, count);
         hl_set_title_from_track(h, playlist_current_track(h->playlist));
     } else if (strcmp(cmd, "move") == 0) {
@@ -571,8 +578,7 @@ static void hl_handle(void *ud, const char *cmd, const char *request,
     } else if (strcmp(cmd, "reverse") == 0) {
         playlist_reverse(h->playlist);
     } else if (strcmp(cmd, "clear") == 0) {
-        h->pending_play = false;
-        audio_stop(h->audio);
+        hl_unload(h);
         playlist_clear(h->playlist);
         h->title[0] = '\0';
     } else if (strcmp(cmd, "shuffle") == 0) {
