@@ -24,6 +24,7 @@ void dock_start_drag(DockManager *dm, const char *name);
 /* Move the dragged window to (x, y) with snapping; docked windows follow. */
 void dock_drag_move(DockManager *dm, const char *name, int x, int y);
 void dock_end_drag(DockManager *dm);
+void dock_keep_on_screen(KWindow *win);
 /* Position windows in default Winamp layout (stacked). */
 void dock_position_default(DockManager *dm);
 

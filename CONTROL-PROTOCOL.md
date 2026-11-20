@@ -120,10 +120,14 @@ metadata, admission, error and seek rules above are unchanged.
 
 `snapshot` returns state plus the playlist in one record. `playlist` and
 `snapshot` include `items` (paths) and `tracks` (file, title, artist, album,
-duration and source_kind). `queue_revision` changes when rows or metadata
-change. Index-based controllers submit the revision of their displayed rows;
-a mismatch returns `STALE_QUEUE` without mutation. A malformed revision is
-refused. Legacy callers may omit it.
+duration and source_kind). Each track from this version also carries a positive
+`entry_id`, unique for the lifetime of the service. Duplicate paths have
+distinct IDs. Moving, sorting and updating metadata preserve them. A controller
+can use the snapshot's `pid` and entry IDs to retain its selection across
+refreshes. `queue_revision` changes when rows or metadata change. Index-based
+controllers submit the displayed revision and its service PID as
+`queue_revision` and `queue_pid`. A mismatch returns `STALE_QUEUE` and leaves
+the queue intact. Legacy callers may omit either field.
 
 Additional commands are `balance` (`level` -100..100), `preamp` (`gain`
 -12..12 dB), `eq_enabled` (`on` boolean), `eq_band` (`band` 0..9, `gain`

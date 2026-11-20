@@ -226,11 +226,6 @@ void main_window_set_pl_visible(MainWindow *mw, bool v)
     mw->pl_toggle.state = v;
 }
 
-void main_window_set_scale(MainWindow *mw, float scale)
-{
-    kwin_set_scale_fixed(&mw->kw, scale);
-}
-
 void main_window_scroll_tick(MainWindow *mw)
 {
     mw->scroll_offset += SCROLL_SPEED;
@@ -366,8 +361,6 @@ void main_window_render(MainWindow *mw)
 
     /* Visualization */
     spectrum_render(&mw->spectrum, buf, VIS_AREA.x, VIS_AREA.y);
-
-    kwin_present(&mw->kw);
 }
 
 /* --- Mouse handling --- */
@@ -381,7 +374,7 @@ static void show_context_menu(MainWindow *mw)
     items[n++] = (MenuItem){"OPEN FILE...", M_OPEN};
     items[n++] = MENU_SEPARATOR;
     items[n++] = MENU_HEADER("SIZE");
-    float cur = kwin_scale(&mw->kw);
+    float cur = mw->preferred_scale;
     for (int s = 0; s < SCALE_PRESET_COUNT; s++) {
         float sc = SCALE_PRESETS[s];
         snprintf(size_labels[s], sizeof(size_labels[s]),
@@ -407,7 +400,6 @@ static void show_context_menu(MainWindow *mw)
     } else if (choice >= M_SIZE_BASE &&
                choice < M_SIZE_BASE + SCALE_PRESET_COUNT) {
         float scale = SCALE_PRESETS[choice - M_SIZE_BASE];
-        main_window_set_scale(mw, scale);
         if (mw->cbs.scale_changed)
             mw->cbs.scale_changed(mw->cbs.ud, scale);
     }
@@ -455,7 +447,7 @@ void main_window_mouse_press(MainWindow *mw, int x, int y, int button)
 
     /* Title bar drag (last - only if nothing else was hit) */
     if (krect_contains(TITLE_BAR, lx, ly)) {
-        kwin_begin_drag(&mw->kw);
+        kwin_begin_drag(&mw->kw, x, y);
         if (mw->cbs.drag_started)
             mw->cbs.drag_started(mw->cbs.ud);
     }

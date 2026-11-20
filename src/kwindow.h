@@ -12,7 +12,7 @@ typedef struct {
     int logical_w, logical_h; /* current logical size */
     bool visible;
     bool active;
-    float scale; /* UI scale factor, SCALE_MIN..SCALE_MAX */
+    float scale; /* actual UI scale on this display */
     bool dragging;
     int drag_off_x, drag_off_y; /* global mouse - window pos at drag start */
 } KWindow;
@@ -25,9 +25,9 @@ void kwin_hide(KWindow *kw);
 void kwin_set_visible(KWindow *kw, bool v);
 uint32_t kwin_id(const KWindow *kw);
 float kwin_scale(const KWindow *kw);
-/* Fixed-size windows (main/EQ): resizes the OS window to logical*scale. */
+/* Fixed-size windows: resize the OS window to logical*scale. */
 void kwin_set_scale_fixed(KWindow *kw, float scale);
-/* Resizable windows: rescales current logical size. */
+/* Resizable windows: scale must be positive and may be fitted to a display. */
 void kwin_set_scale_resizable(KWindow *kw, float scale, int min_w,
                               int min_h);
 /* Mouse event coords -> logical coords. */
@@ -36,9 +36,10 @@ void kwin_present(KWindow *kw);
 void kwin_get_pos(const KWindow *kw, int *x, int *y);
 void kwin_set_pos(KWindow *kw, int x, int y);
 void kwin_get_size(const KWindow *kw, int *w, int *h); /* OS pixels */
+bool kwin_display_bounds(const KWindow *kw, SDL_Rect *bounds);
 
-/* Title-bar drag helpers (global mouse coordinates). */
-void kwin_begin_drag(KWindow *kw);
+/* Anchor the drag to the button event's window-relative pixel position. */
+void kwin_begin_drag(KWindow *kw, int x, int y);
 /* Returns desired new window position for the current global mouse. */
 void kwin_drag_pos(const KWindow *kw, int *nx, int *ny);
 

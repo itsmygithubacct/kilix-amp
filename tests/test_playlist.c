@@ -173,6 +173,28 @@ static void test_shuffle(void)
     playlist_free(pl);
 }
 
+static void test_move_and_repeat_shuffled_tracks(void)
+{
+    char *paths[3];
+    Playlist *pl = filled(paths);
+    playlist_remove(pl, (int[]){2}, 1);
+    playlist_set_current(pl, 0);
+    playlist_set_shuffle(pl, true);
+    playlist_move(pl, 0, 1);
+    ASSERT_STR_EQ(playlist_current_track(pl)->filepath, paths[0]);
+    ASSERT_STR_EQ(playlist_next_track(pl)->filepath, paths[1]);
+    playlist_set_shuffle(pl, true);
+    ASSERT_TRUE(playlist_next_track(pl) == NULL);
+
+    playlist_set_repeat(pl, REPEAT_ALL);
+    for (int i = 0; i < 6; i++)
+        ASSERT_STR_EQ(playlist_next_track(pl)->filepath, paths[i % 2]);
+    playlist_remove(pl, (int[]){1}, 1);
+    ASSERT_STR_EQ(playlist_next_track(pl)->filepath, paths[1]);
+    playlist_free(pl);
+    for (int i = 0; i < 3; i++) free(paths[i]);
+}
+
 static void test_move(void)
 {
     char *paths[3];
@@ -462,6 +484,7 @@ int main(void)
     RUN(test_navigation);
     RUN(test_repeat_all);
     RUN(test_shuffle);
+    RUN(test_move_and_repeat_shuffled_tracks);
     RUN(test_move);
     RUN(test_sort_by_filename);
     RUN(test_display_title_and_duration);

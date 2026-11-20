@@ -23,6 +23,14 @@ SRCDIR   = src
 OBJDIR   = $(if $(filter 1,$(ENCODEC)),build-encodec,build)
 TESTDIR  = tests
 
+# A debug invocation can also request tests. Keep every instrumented object
+# and test in a separate directory for the selected EnCodec configuration.
+ifneq ($(filter debug,$(MAKECMDGOALS)),)
+override OBJDIR := $(OBJDIR)/debug
+CFLAGS := $(filter-out -O2,$(CFLAGS)) -O0 -g -fsanitize=address,undefined
+LDLIBS += -fsanitize=address,undefined
+endif
+
 SRCS     = $(wildcard $(SRCDIR)/*.c)
 OBJS     = $(SRCS:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 # Objects shared with the test binaries (everything except main.c)
@@ -45,9 +53,7 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
-debug: CFLAGS := $(filter-out -O2,$(CFLAGS)) -O0 -g -fsanitize=address,undefined
-debug: LDLIBS += -fsanitize=address,undefined
-debug: clean $(BIN)
+debug: $(BIN)
 
 $(OBJDIR)/test_%: $(TESTDIR)/test_%.c $(LIBOBJS)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $< $(LIBOBJS) $(LDLIBS)

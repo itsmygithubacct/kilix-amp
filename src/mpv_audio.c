@@ -230,14 +230,19 @@ static void load_media(MpvAudioEngine *a, const char *path)
     send_command(a, args, 3, 100 + a->generation);
     property(a, "pause", a->want_play ? "no" : "yes");
 }
-void mpv_audio_load(MpvAudioEngine *a, const char *path)
+void mpv_audio_unload(MpvAudioEngine *a)
 {
     mpv_audio_stop(a);
     free(a->current_file);
-    a->current_file = ka_strdup(path);
+    a->current_file = NULL;
     a->duration = 0;
     a->last_error[0] = 0;
     memset(&a->tags, 0, sizeof(a->tags));
+}
+void mpv_audio_load(MpvAudioEngine *a, const char *path)
+{
+    mpv_audio_unload(a);
+    a->current_file = ka_strdup(path);
     if (!start_mpv(a)) return;
     state(a, "loading");
     char *ext = ka_ext_lower(path);
@@ -445,7 +450,8 @@ void mpv_audio_poll(MpvAudioEngine *a)
         a->input_len = a->output_len = 0;
         a->loaded = a->have_samples = false;
         cancel_midi(a);
-        error(a, "kilix-mpv exited; check that it is installed (or set KILIX_MPV)");
+        if (strcmp(a->state, "stopped") != 0)
+            error(a, "kilix-mpv exited; check that it is installed (or set KILIX_MPV)");
     }
     uint32_t now = SDL_GetTicks();
     if (now - a->last_position >= 100) {

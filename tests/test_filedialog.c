@@ -17,12 +17,18 @@ static void test_large_multiselect_output_is_complete(void)
         return;
     }
     fputs("#!/bin/sh\n"
+          "separator='|'\n"
+          "for arg do\n"
+          "  case $arg in --separator=*) separator=${arg#--separator=} ;; esac\n"
+          "done\n"
           "i=0\n"
           "while [ \"$i\" -lt 700 ]; do\n"
-          "  printf '/tmp/kilix-selected-file-%04d-with-a-long-name.wav\\n' "
+          "  if [ \"$i\" -gt 0 ]; then printf '%s' \"$separator\"; fi\n"
+          "  printf '/tmp/kilix-selected-file-%04d-with-a-long-name.wav' "
           "\"$i\"\n"
           "  i=$((i + 1))\n"
-          "done\n",
+          "done\n"
+          "printf '\\n'\n",
           f);
     fclose(f);
     ASSERT_EQ_INT(chmod(zenity, 0700), 0);

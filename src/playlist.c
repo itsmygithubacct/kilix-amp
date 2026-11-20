@@ -8,7 +8,8 @@
 
 static const char *AUDIO_EXTENSIONS[] = {
     ".mp3", ".mp2", ".mp1", ".ogg", ".oga", ".opus", ".flac", ".wav",
-    ".aac", ".m4a", ".wma", ".ape", ".mpc", ".wv",   ".aiff", ".aif",
+    ".aac", ".m4a", ".m4b", ".mka", ".weba", ".wma", ".ape", ".mpc",
+    ".wv", ".aiff", ".aif",
     ".mid", ".midi", ".mod", ".s3m", ".xm",  ".it", ".kenc",
 };
 
@@ -70,6 +71,7 @@ char *track_duration_str(const Track *t)
 struct Playlist {
     Track *tracks;
     int count, cap;
+    long long last_entry_id, snapshot_pid;
     int current_index;
     bool shuffle;
     int repeat;
@@ -147,6 +149,7 @@ void playlist_set_callbacks(Playlist *pl, PlaylistChangedFn changed,
 }
 
 int playlist_count(const Playlist *pl) { return pl->count; }
+long long playlist_snapshot_pid(const Playlist *pl) { return pl->snapshot_pid; }
 
 Track *playlist_track(const Playlist *pl, int index)
 {
@@ -219,9 +222,9 @@ bool playlist_shuffle(const Playlist *pl) { return pl->shuffle; }
 
 void playlist_set_shuffle(Playlist *pl, bool on)
 {
-    pl->shuffle = on;
-    if (on)
+    if (on && (!pl->shuffle || !pl->shuffle_order))
         generate_shuffle_order(pl);
+    pl->shuffle = on;
 }
 
 void playlist_toggle_shuffle(Playlist *pl)
@@ -260,7 +263,7 @@ char *playlist_total_duration_str(const Playlist *pl)
 
 /* --- Track management --- */
 
-static void push_track(Playlist *pl, Track t)
+static void append_track(Playlist *pl, Track t)
 {
     if (pl->count == pl->cap) {
         pl->cap = pl->cap ? pl->cap * 2 : 64;
@@ -269,6 +272,12 @@ static void push_track(Playlist *pl, Track t)
             abort();
     }
     pl->tracks[pl->count++] = t;
+}
+
+static void push_track(Playlist *pl, Track t)
+{
+    t.entry_id = ++pl->last_entry_id;
+    append_track(pl, t);
 }
 
 bool playlist_apply_snapshot(Playlist *pl, const char *reply)
@@ -284,25 +293,29 @@ bool playlist_apply_snapshot(Playlist *pl, const char *reply)
     char *entry;
     while ((entry = json_array_next(&cursor))) {
         char path[4096], title[1024] = "", artist[1024] = "", album[1024] = "";
-        long long duration = -1, kind = KA_ENCODEC_FILE;
+        long long duration = -1, kind = KA_ENCODEC_FILE, entry_id = 0;
         bool valid = json_get_str(entry, "file", path, sizeof(path)) && *path;
         json_get_str(entry, "title", title, sizeof(title));
         json_get_str(entry, "artist", artist, sizeof(artist));
         json_get_str(entry, "album", album, sizeof(album));
         json_get_int(entry, "duration", &duration);
         json_get_int(entry, "source_kind", &kind);
+        json_get_int(entry, "entry_id", &entry_id);
         free(entry);
         if (kind < KA_ENCODEC_FILE || kind > KA_ENCODEC_SOCKET) valid = false;
         if (!valid) { playlist_free(replacement); free(array); return false; }
         Track t = track_make(path, title, (int)KA_CLAMP(duration, -1, INT32_MAX));
+        t.entry_id = KA_MAX(0, entry_id);
         t.source_kind = (KaEncodecKind)kind;
         free(t.artist); free(t.album);
         t.artist = ka_strdup(artist); t.album = ka_strdup(album);
-        push_track(replacement, t);
+        append_track(replacement, t);
     }
     free(array);
     if (replacement->count != count) { playlist_free(replacement); return false; }
     json_get_int(reply, "index", &index);
+    pl->snapshot_pid = 0;
+    json_get_int(reply, "pid", &pl->snapshot_pid);
     for (int i = 0; i < pl->count; i++) track_destroy(&pl->tracks[i]);
     free(pl->tracks); free(pl->shuffle_order);
     pl->tracks = replacement->tracks;
@@ -509,6 +522,14 @@ void playlist_clear(Playlist *pl)
     emit_changed(pl);
 }
 
+static int index_after_move(int index, int from, int to)
+{
+    if (index == from) return to;
+    if (from < index && index <= to) return index - 1;
+    if (to <= index && index < from) return index + 1;
+    return index;
+}
+
 void playlist_move(Playlist *pl, int from_idx, int to_idx)
 {
     if (pl->remote) {
@@ -532,12 +553,11 @@ void playlist_move(Playlist *pl, int from_idx, int to_idx)
         memmove(&pl->tracks[to_idx + 1], &pl->tracks[to_idx],
                 (size_t)(from_idx - to_idx) * sizeof(Track));
     pl->tracks[to_idx] = t;
-    if (pl->current_index == from_idx)
-        pl->current_index = to_idx;
-    else if (from_idx < pl->current_index && pl->current_index <= to_idx)
-        pl->current_index--;
-    else if (to_idx <= pl->current_index && pl->current_index < from_idx)
-        pl->current_index++;
+    pl->current_index = index_after_move(pl->current_index, from_idx, to_idx);
+    if (pl->shuffle && pl->shuffle_order) {
+        for (int i = 0; i < pl->count; i++)
+            pl->shuffle_order[i] = index_after_move(pl->shuffle_order[i], from_idx, to_idx);
+    }
     emit_changed(pl);
 }
 
@@ -558,6 +578,14 @@ Track *playlist_next_track(Playlist *pl)
         if (pl->shuffle_pos >= pl->count) {
             if (pl->repeat == REPEAT_ALL) {
                 generate_shuffle_order(pl);
+                /* The current track is at zero. Start the new cycle on a
+                 * different track, keeping each entry in the cycle once. */
+                if (pl->count > 1) {
+                    int next = 1 + rand() % (pl->count - 1);
+                    int first = pl->shuffle_order[0];
+                    pl->shuffle_order[0] = pl->shuffle_order[next];
+                    pl->shuffle_order[next] = first;
+                }
                 pl->shuffle_pos = 0;
             } else {
                 pl->shuffle_pos = pl->count - 1;

@@ -41,6 +41,15 @@ def wait_for(predicate, timeout=5):
     raise AssertionError(f"condition did not become true (last result: {last!r})")
 
 
+def xdotool(env, *args):
+    return subprocess.check_output(["xdotool", *map(str, args)], env=env, text=True, timeout=5).strip()
+
+
+def window_geometry(env, window):
+    fields = dict(line.split("=") for line in xdotool(env, "getwindowgeometry", "--shell", window).splitlines())
+    return tuple(int(fields[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+
+
 class SharedPlayback(unittest.TestCase):
     def setUp(self):
         if not shutil.which(os.environ.get("KILIX_MPV", "kilix-mpv")):
@@ -126,11 +135,11 @@ class SharedPlayback(unittest.TestCase):
         spec.loader.exec_module(module)
         return module.Backend(str(self.socket))
 
-    def display(self):
+    def display(self, screen="1280x720x24"):
         if not shutil.which("Xvfb") or not shutil.which("xdotool"):
             self.skipTest("Xvfb and xdotool are required for GUI checks")
         reader, writer = os.pipe()
-        self.spawn(["Xvfb", "-displayfd", str(writer), "-screen", "0", "1280x720x24", "-nolisten", "tcp"], pass_fds=(writer,))
+        self.spawn(["Xvfb", "-displayfd", str(writer), "-screen", "0", screen, "-nolisten", "tcp", "-noreset"], pass_fds=(writer,))
         os.close(writer)
         try:
             self.assertTrue(select.select([reader], [], [], 5)[0])
@@ -144,7 +153,9 @@ class SharedPlayback(unittest.TestCase):
 
     def window(self, process, env):
         def find():
-            result = subprocess.run(["xdotool", "search", "--onlyvisible", "--pid", str(process.pid), "--name", "^kilix-amp$"],
+            if process.poll() is not None:
+                self.fail(f"Amp exited with {process.returncode}\n{Path(self.log.name).read_text()}")
+            result = subprocess.run(["xdotool", "search", "--all", "--onlyvisible", "--pid", str(process.pid), "--name", "^kilix-amp$"],
                                     env=env, capture_output=True, text=True)
             return result.stdout.splitlines()[0] if result.returncode == 0 else None
         return wait_for(find)
@@ -207,6 +218,41 @@ class SharedPlayback(unittest.TestCase):
         self.assertEqual(client.command("playlist")["items"], [str(self.tone)])
         self.assertEqual(self.command("state")["state"], "stopped")
 
+    def test_removing_playing_track_discards_its_source_and_duration(self):
+        self.start(self.tone, self.other)
+        self.playing()
+        wait_for(lambda: self.command("snapshot")["tracks"][0]["duration"] == 8)
+        stopped = self.command("remove", indices=[0])
+        self.assertTrue(stopped["ok"])
+        self.assertEqual(stopped["state"], "stopped")
+        self.assertEqual(stopped["track_title"], self.other.stem)
+        self.assertEqual(stopped["source_type"], "none")
+        self.assertEqual(stopped["file"], "")
+        self.assertIsNone(stopped["len"])
+        self.assertEqual(stopped["sample_rate"], 0)
+        self.assertFalse(stopped["seekable"])
+        time.sleep(.2)  # Allow position notifications from the idle engine.
+        self.assertEqual(self.command("snapshot")["tracks"][0]["duration"], -1)
+        self.assertEqual(self.command("state", protocol=1)["file"], "")
+        self.command("play")
+        self.assertEqual(self.playing()["file"], str(self.other))
+
+    def test_restarted_service_refuses_an_edit_from_the_previous_queue(self):
+        first = self.start()
+        self.command("add", path=str(self.tone))
+        old = self.command("snapshot")
+        self.command("quit")
+        self.assertEqual(first.wait(timeout=5), 0)
+        self.start()
+        self.command("add", path=str(self.other))
+        new = self.command("snapshot")
+        self.assertEqual(old["queue_revision"], new["queue_revision"])
+        self.assertNotEqual(old["pid"], new["pid"])
+        reply = self.command("remove", indices=[0], queue_pid=old["pid"],
+                             queue_revision=old["queue_revision"])
+        self.assertEqual(reply.get("error_code"), "STALE_QUEUE")
+        self.assertEqual(self.command("playlist")["items"], [str(self.other)])
+
     def test_large_playlist_reaches_both_clients_with_metadata(self):
         listing = self.path / "large.m3u"
         listing.write_text("#EXTM3U\n" + "".join(
@@ -254,6 +300,175 @@ class SharedPlayback(unittest.TestCase):
         status = self.playing()
         self.assertEqual(status["pid"], service.pid)
         self.assertEqual(status["index"], 1)
+
+    def test_player_and_playlist_share_one_native_window(self):
+        config = Path(self.env["XDG_CONFIG_HOME"]) / "kilix-amp/kilix-amp.ini"
+        config.parent.mkdir(parents=True)
+        config.write_text("[ui]\nmain_x=100\nmain_y=80\nplaylist_x=900\nplaylist_y=400\n")
+        self.start(self.tone, self.other)
+        self.playing()
+        self.command("pause")
+        env = self.display()
+
+        def xdo(*args):
+            return xdotool(env, *args)
+
+        def geometry():
+            return window_geometry(env, window)
+
+        def drag(x, y, dx, dy):
+            xdo("mousemove", "--window", window, x, y, "mousedown", 1, "sleep", ".08",
+                "mousemove_relative", "--", dx, dy, "sleep", ".08", "mouseup", 1)
+
+        gui = self.spawn([str(AMP)], env)
+        window = self.window(gui, env)
+        self.assertEqual(xdo("search", "--onlyvisible", "--pid", gui.pid).splitlines(), [window])
+        self.assertEqual(geometry(), (100, 80, 275, 348))
+        xdo("windowfocus", "--sync", window, "key", "Down")
+        wait_for(lambda: self.command("state")["volume"] == 75)
+
+        # Grab the lower title bar, then grow the playlist by its own grip.
+        drag(72, 124, 50, 35)
+        wait_for(lambda: geometry() == (150, 115, 275, 348))
+        drag(270, 343, 60, 30)
+        wait_for(lambda: geometry() == (150, 115, 335, 378))
+        xdo("mousemove", "--window", window, 55, 154, "click", "--repeat", 2, 1)
+        wait_for(lambda: self.command("state")["file"] == str(self.other))
+
+        # The playlist close button and the player's PL button reuse the same window.
+        xdo("mousemove", "--window", window, 330, 124, "click", 1)
+        wait_for(lambda: geometry()[2:] == (275, 116))
+        xdo("mousemove", "--window", window, 250, 63, "click", 1)
+        wait_for(lambda: geometry()[2:] == (335, 378))
+        xdo("windowfocus", window, "key", "alt+e")
+        wait_for(lambda: geometry()[2:] == (275, 116))
+        xdo("mousemove", "--window", window, 268, 7, "click", 1)
+        self.assertEqual(gui.wait(timeout=5), 0)
+
+        # Restart collapsed and restore the saved playlist dimensions at 1.5x.
+        gui = self.spawn([str(AMP), "--scale", "1.5"], env)
+        window = self.window(gui, env)
+        self.assertEqual(geometry(), (150, 115, 413, 174))
+        xdo("windowfocus", window, "key", "alt+e")
+        wait_for(lambda: geometry() == (150, 115, 503, 567))
+        self.assertEqual(xdo("search", "--onlyvisible", "--pid", gui.pid).splitlines(), [window])
+        xdo("mousemove", "--window", window, 82, 212, "click", "--repeat", 2, 1)
+        wait_for(lambda: self.command("state")["file"] == str(self.tone))
+
+        xdo("key", "alt+e")
+        wait_for(lambda: geometry()[2:] == (413, 174))
+        xdo("windowmove", window, 820, 520, "key", "alt+e")
+        wait_for(lambda: geometry() == (777, 153, 503, 567))
+
+    def test_docked_player_fits_small_display_and_restores_preferred_size(self):
+        config = Path(self.env["XDG_CONFIG_HOME"]) / "kilix-amp/kilix-amp.ini"
+        config.parent.mkdir(parents=True)
+        config.write_text("[ui]\nscale=2\npl_width=475\npl_height=380\nmain_x=800\nmain_y=600\n")
+        self.start()
+        small = self.display("640x480x24")
+        gui = self.spawn([str(AMP)], small)
+        window = self.window(gui, small)
+        self.assertEqual(window_geometry(small, window), (0, 0, 640, 480))
+        xdotool(small, "windowfocus", "--sync", window, "key", "alt+e")
+        wait_for(lambda: window_geometry(small, window)[2:] == (550, 232))
+        xdotool(small, "key", "alt+e")
+        wait_for(lambda: window_geometry(small, window)[2:] == (640, 480))
+
+        # Cycle through the larger zoom presets even when several must fit
+        # the same physical screen. The last press returns to the 1x preset.
+        for _ in range(4):
+            xdotool(small, "key", "d")
+        wait_for(lambda: window_geometry(small, window)[2:] == (475, 480))
+        xdotool(small, "key", "d", "d")
+        wait_for(lambda: window_geometry(small, window)[2:] == (640, 480))
+        xdotool(small, "mousemove", "--window", window, 536, 14, "click", 1)
+        self.assertEqual(gui.wait(timeout=5), 0)
+
+        large = self.display("1280x1024x24")
+        gui = self.spawn([str(AMP)], large)
+        window = self.window(gui, large)
+        self.assertEqual(window_geometry(large, window)[2:], (950, 992))
+
+    def test_playlist_scrollbar_drags_to_both_ends_at_fractional_zoom(self):
+        listing = self.path / "scroll.m3u"
+        listing.write_text("#EXTM3U\n" + (str(self.tone) + "\n") * 40)
+        self.start()
+        self.command("add", path=str(listing))
+        env = self.display()
+        gui = self.spawn([str(AMP), "--scale", "1.5"], env)
+        window = self.window(gui, env)
+        xdotool(env, "windowfocus", "--sync", window, "key", "Down")
+        wait_for(lambda: self.command("state")["volume"] == 75)
+
+        def drag_thumb(start_y, end_y):
+            xdotool(env, "mousemove", "--window", window, 394, start_y, "mousedown", 1,
+                    "sleep", ".05", "mousemove", "--window", window, 425, end_y,
+                    "sleep", ".05", "mouseup", 1)
+
+        def play_first_visible():
+            xdotool(env, "mousemove", "--window", window, 65, 213, "click", "--repeat", 2, 1)
+
+        drag_thumb(219, 590)
+        # Appending a row and scrolling horizontally leave the visible rows in place.
+        self.command("add", path=str(self.other))
+        xdotool(env, "key", "Up")
+        wait_for(lambda: self.command("state")["volume"] == 80)
+        xdotool(env, "mousemove", "--window", window, 65, 213, "click", 7)
+        play_first_visible()
+        wait_for(lambda: self.command("state")["index"] == 27)
+        drag_thumb(414, 125)
+        play_first_visible()
+        wait_for(lambda: self.command("state")["index"] == 0)
+
+    def test_gui_removes_the_selected_duplicate_after_another_client_reorders(self):
+        listing = self.path / "duplicates.m3u"
+        listing.write_text("#EXTM3U\n" + "".join(
+            f"#EXTINF:8,{label}\n{self.tone}\n" for label in ("First", "Second", "Third")))
+        self.start()
+        self.assertTrue(self.command("add", path=str(listing))["ok"])
+        env = self.display()
+        gui = self.spawn([str(AMP)], env)
+        window = self.window(gui, env)
+        xdotool(env, "windowfocus", "--sync", window, "key", "Down")
+        wait_for(lambda: self.command("state")["volume"] == 75)
+        xdotool(env, "mousemove", "--window", window, 50, 168, "click", 1)
+        self.assertTrue(self.command("reverse")["ok"])
+        self.assertTrue(self.command("add", path=str(self.other))["ok"])
+        xdotool(env, "key", "Up")
+        wait_for(lambda: self.command("state")["volume"] == 80)
+
+        # Open the context menu on empty space and remove the selected row.
+        xdotool(env, "mousemove", "--window", window, 50, 250, "click", 3)
+        menu = xdotool(env, "search", "--sync", "--all", "--onlyvisible",
+                       "--pid", gui.pid, "--name", "^menu$")
+        xdotool(env, "mousemove", "--window", menu, 38, 61, "click", 1)
+        wait_for(lambda: self.command("state")["count"] == 3)
+        rows = self.command("snapshot")["tracks"]
+        self.assertEqual([row["title"] for row in rows[:2]], ["Second", "First"])
+        self.assertEqual(rows[2]["file"], str(self.other))
+
+    def test_gui_opens_first_selected_track_after_another_client_appends(self):
+        self.start(self.tone)
+        self.playing()
+        selection = self.path / "selection"
+        os.mkfifo(selection)
+        picker = self.path / "zenity"
+        picker.write_text('#!/bin/sh\nexec timeout 6 cat "$PICKER_INPUT"\n')
+        picker.chmod(0o700)
+        env = dict(self.display(), PICKER_INPUT=str(selection),
+                   PATH=str(self.path) + os.pathsep + os.environ["PATH"])
+        gui = self.spawn([str(AMP)], env)
+        window = self.window(gui, env)
+        subprocess.run(["xdotool", "key", "--window", window, "l"], env=env,
+                       check=True, capture_output=True)
+        writer = wait_for(lambda: os.open(selection, os.O_WRONLY | os.O_NONBLOCK))
+        with os.fdopen(writer, "w") as answer:
+            self.assertTrue(self.command("add", path=str(self.tone))["ok"])
+            answer.write(f"{self.other}\n{self.tone}\n")
+        wait_for(lambda: self.command("state")["count"] == 4)
+        status = self.playing()
+        self.assertEqual(status["file"], str(self.other))
+        self.assertEqual(status["index"], 2)
 
     def test_gui_autostarts_service_and_other_gui_attaches(self):
         env = dict(self.display(), KILIXAMP_EXIT_AFTER_MS="1600")
@@ -307,6 +522,21 @@ class SharedPlayback(unittest.TestCase):
         self.command("play")
         self.assertEqual(self.playing()["file"], str(self.tone))
 
+        # The idle player can also exit after Stop. This must not auto-skip
+        # to the next queued track or report a failure for a stopped session.
+        self.command("add", path=str(self.other))
+        children = Path(f"/proc/{status['pid']}/task/{status['pid']}/children")
+        idle_pid, = map(int, children.read_text().split())
+        self.command("stop")
+        os.kill(idle_pid, signal.SIGTERM)
+        wait_for(lambda: str(idle_pid) not in children.read_text().split())
+        stopped = self.command("state")
+        self.assertEqual(stopped["state"], "stopped")
+        self.assertEqual(stopped["index"], 0)
+        self.assertEqual(stopped["last_error"], "")
+        self.command("play")
+        self.assertEqual(self.playing()["file"], str(self.tone))
+
     def test_midi_and_aac_decode(self):
         midi = self.path / "note.mid"
         events = bytes.fromhex("00 c0 00 00 90 45 64 8f 00 80 45 00 00 ff 2f 00")
@@ -325,6 +555,22 @@ class SharedPlayback(unittest.TestCase):
         wait_for(lambda: self.command("state")["file"] == str(aac))
         status = self.playing()
         self.assertAlmostEqual(status["len"], 8, delta=.1)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required to generate audio containers")
+    def test_mpv_audio_containers(self):
+        self.start()
+        for suffix, codec, muxer in (("m4b", "aac", "mp4"), ("mka", "flac", "matroska"),
+                                     ("weba", "libopus", "webm")):
+            with self.subTest(suffix=suffix):
+                track = self.path / f"track.{suffix}"
+                subprocess.run(["ffmpeg", "-v", "error", "-i", str(self.tone), "-t", "2",
+                                "-c:a", codec, "-f", muxer, str(track)], check=True)
+                reply = self.command("open", source_type="file", path=str(track))
+                self.assertTrue(reply["ok"], reply)
+                status = self.playing()
+                self.assertEqual(status["file"], str(track))
+                self.assertEqual(status["backend"], "kilix-mpv")
+                self.assertAlmostEqual(status["len"], 2, delta=.1)
 
     def test_rapid_replacement_and_stop_ignore_old_mpv_events(self):
         self.start(self.tone, self.other)

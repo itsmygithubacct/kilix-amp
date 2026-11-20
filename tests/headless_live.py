@@ -136,6 +136,7 @@ def run(binary, path, evidence, unix=False):
                     cleared = command('clear')
                     assert cleared['source_type'] == 'none' and cleared['source_error_code'] == 0
                     assert not cleared['source_error_message'] and not cleared['source_error_recoverable']
+                    assert request({'cmd': 'state', 'protocol': 1})['file'] == ''
                     checks += 2
                     command('open', source_type='encodec-unix', path=str(source))
                 deadline = time.monotonic() + 30

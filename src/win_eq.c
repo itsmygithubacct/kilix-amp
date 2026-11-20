@@ -183,7 +183,7 @@ void eq_window_mouse_press(EQWindow *ew, int x, int y, int button)
         return;
 
     if (krect_contains(EQ_TITLE_BAR, lx, ly)) {
-        kwin_begin_drag(&ew->kw);
+        kwin_begin_drag(&ew->kw, x, y);
         if (ew->cbs.drag_started)
             ew->cbs.drag_started(ew->cbs.ud);
     }
