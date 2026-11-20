@@ -1,4 +1,4 @@
-build/
+/build/
 build-encodec/
 build-ubsan/
 build-asan/
