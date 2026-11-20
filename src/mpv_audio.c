@@ -450,7 +450,8 @@ void mpv_audio_poll(MpvAudioEngine *a)
         a->input_len = a->output_len = 0;
         a->loaded = a->have_samples = false;
         cancel_midi(a);
-        error(a, "kilix-mpv exited; check that it is installed (or set KILIX_MPV)");
+        if (strcmp(a->state, "stopped") != 0)
+            error(a, "kilix-mpv exited; check that it is installed (or set KILIX_MPV)");
     }
     uint32_t now = SDL_GetTicks();
     if (now - a->last_position >= 100) {

@@ -349,6 +349,21 @@ class SharedPlayback(unittest.TestCase):
         self.command("play")
         self.assertEqual(self.playing()["file"], str(self.tone))
 
+        # The idle player can also exit after Stop. This must not auto-skip
+        # to the next queued track or report a failure for a stopped session.
+        self.command("add", path=str(self.other))
+        children = Path(f"/proc/{status['pid']}/task/{status['pid']}/children")
+        idle_pid, = map(int, children.read_text().split())
+        self.command("stop")
+        os.kill(idle_pid, signal.SIGTERM)
+        wait_for(lambda: str(idle_pid) not in children.read_text().split())
+        stopped = self.command("state")
+        self.assertEqual(stopped["state"], "stopped")
+        self.assertEqual(stopped["index"], 0)
+        self.assertEqual(stopped["last_error"], "")
+        self.command("play")
+        self.assertEqual(self.playing()["file"], str(self.tone))
+
     def test_midi_and_aac_decode(self):
         midi = self.path / "note.mid"
         events = bytes.fromhex("00 c0 00 00 90 45 64 8f 00 80 45 00 00 ff 2f 00")
