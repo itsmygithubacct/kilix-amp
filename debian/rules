@@ -3,7 +3,8 @@
 # under PREFIX, which a developer leaves at the account .local directory.
 # The package uses /usr. The build does not fetch anything.
 
-export DEB_BUILD_OPTIONS := noautodbgsym
+DEB_BUILD_OPTIONS += noautodbgsym
+export DEB_BUILD_OPTIONS
 
 %:
 	dh $@
