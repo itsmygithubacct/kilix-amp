@@ -8,13 +8,19 @@ export DEB_BUILD_OPTIONS := noautodbgsym
 %:
 	dh $@
 
+override_dh_auto_clean:
+	$(MAKE) clean
+	rm -rf termixer/target debian/.built
+
 override_dh_auto_build:
-	$(MAKE) all
+	debian/build-termixer.sh
 
 override_dh_auto_test:
 	$(MAKE) test
 
 override_dh_auto_install:
-	$(MAKE) install PREFIX=/usr DESTDIR=$(CURDIR)/debian/kilix-amp
+	. debian/.built/env && if [ -n "$$libdir" ]; then export PKG_CONFIG_LIBDIR="$$libdir" PKG_CONFIG_ALLOW_CROSS=1; fi && $(MAKE) install PREFIX=/usr DESTDIR=$(CURDIR)/debian/kilix-amp CC="$$cc"
+	install -m 755 debian/.built/termixer debian/kilix-amp/usr/bin/termixer
 	test -x debian/kilix-amp/usr/bin/kilix-amp
+	test -x debian/kilix-amp/usr/bin/termixer
 	test -f debian/kilix-amp/usr/lib/kilix-amp/libkilix-meter.so

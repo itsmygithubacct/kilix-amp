@@ -36,7 +36,10 @@ payload byte differs from the imported source.
 
 Termixer's MIT copyright and permission notice must accompany every copy or
 substantial portion of that component. Its Cargo manifest and lock refer to
-Rust dependencies; dependency source is not vendored in this repository.
+Rust dependencies. Those crates are vendored under `termixer/vendor`. The
+package builds them with `cargo --offline --locked` and does not fetch them.
+Crate files the amd64 and arm64 build does not compile were removed. Each
+crate keeps its own license file.
 
 ## Project screenshot
 
@@ -74,9 +77,9 @@ sample.
 
 The C application builds against SDL2, SDL2_image, libsndfile, zlib and
 FluidSynth. They are linked from the operating-system dependency closure, not
-vendored here, and retain their own package licences and notices. The Termixer
-source has its separate Cargo dependency closure; no Termixer dependency source
-is copied into this repository.
+vendored here, and retain their own package licences and notices. Termixer
+also links the system ALSA and Wayland client libraries. Its crate sources
+are the tree under `termixer/vendor`.
 
 ## LADSPA ABI header
 

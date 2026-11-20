@@ -1,3 +1,10 @@
+kilix-amp (0.20261029+packaging2) UNRELEASED; urgency=medium
+
+  * Build termixer from the crates vendored in the source, with no network,
+    and install that command next to the player.
+
+ -- itsmygithubacct <itsmygithubacct@users.noreply.github.com>  Fri, 20 Nov 2026 11:20:00 +0000
+
 kilix-amp (0.20261029+packaging1) UNRELEASED; urgency=medium
 
   * Install the player and the meter library under /usr.

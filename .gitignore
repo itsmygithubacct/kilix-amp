@@ -6,5 +6,7 @@ kilix-amp
 *.o
 *.d
 libkilix-meter.so
+termixer/target/
+debian/.built/
 /build-shared-asan/
 __pycache__/
