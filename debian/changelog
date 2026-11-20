@@ -1,0 +1,6 @@
+kilix-amp (0.20261029+packaging1) UNRELEASED; urgency=medium
+
+  * Install the player and the meter library under /usr.
+    A developer install still defaults to the account's .local directory.
+
+ -- itsmygithubacct <itsmygithubacct@users.noreply.github.com>  Fri, 20 Nov 2026 07:23:53 +0000

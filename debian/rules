@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+# make all builds kilix-amp and libkilix-meter.so. make install puts both
+# under PREFIX, which a developer leaves at the account .local directory.
+# The package uses /usr. The build does not fetch anything.
+
+export DEB_BUILD_OPTIONS := noautodbgsym
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) all
+
+override_dh_auto_test:
+	$(MAKE) test
+
+override_dh_auto_install:
+	$(MAKE) install PREFIX=/usr DESTDIR=$(CURDIR)/debian/kilix-amp
+	test -x debian/kilix-amp/usr/bin/kilix-amp
+	test -f debian/kilix-amp/usr/lib/kilix-amp/libkilix-meter.so

@@ -1,0 +1,18 @@
+Source: kilix-amp
+Section: sound
+Priority: optional
+Maintainer: itsmygithubacct <itsmygithubacct@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), pkgconf, libsdl2-dev, libsdl2-image-dev, libsndfile1-dev, zlib1g-dev, libfluidsynth-dev
+Standards-Version: 4.7.2
+Homepage: https://github.com/itsmygithubacct/kilix-amp
+Vcs-Git: https://github.com/itsmygithubacct/kilix-amp.git
+Vcs-Browser: https://github.com/itsmygithubacct/kilix-amp
+Rules-Requires-Root: no
+
+Package: kilix-amp
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: music player
+ kilix-amp is a skinnable music player. This package installs the player
+ and its meter library under /usr. The player reports its usage with
+ --help, without opening a window.
