@@ -24,9 +24,9 @@ moved from the README; the [README](../README.md) is the short entry point.
 | `src/render.c` | software-surface compositing + present at 1x/2x |
 | `src/widgets.c` | bitmap button/toggle/slider primitives + hit dispatch |
 | `src/spectrum.c` | 75-bar analyzer + oscilloscope |
-| `src/win_main.c` | main 275x116 player window |
+| `src/win_main.c` | 275x116 player controls at the top of the shared player window |
 | `src/win_eq.c` | 10-band equalizer window |
-| `src/win_playlist.c` | resizable playlist editor |
+| `src/win_playlist.c` | resizable track list drawn below the controls on the same SDL window surface |
 | `src/win_editor.c` | resizable waveform editor |
 | `src/dock.c` | window snapping/docking |
 | `src/menu.c` / `src/dialog.c` | in-house popup menus and modal param dialogs |
@@ -48,5 +48,5 @@ moved from the README; the [README](../README.md) is the short entry point.
   (no m4a/wma).
 - **Pitch shift uses linear resampling** instead of scipy's FFT resampler;
   audibly equivalent for the +-12 semitone UI range.
-- Everything else - window layout, skin coordinates, EQ curve math,
-  playlist semantics, effect algorithms, config keys - is a direct port.
+- Skin coordinates, EQ curve math,
+  playlist semantics, effect algorithms and config keys follow the original.

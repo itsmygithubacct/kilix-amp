@@ -37,8 +37,8 @@ void kwin_get_pos(const KWindow *kw, int *x, int *y);
 void kwin_set_pos(KWindow *kw, int x, int y);
 void kwin_get_size(const KWindow *kw, int *w, int *h); /* OS pixels */
 
-/* Title-bar drag helpers (global mouse coordinates). */
-void kwin_begin_drag(KWindow *kw);
+/* Anchor the drag to the button event's window-relative pixel position. */
+void kwin_begin_drag(KWindow *kw, int x, int y);
 /* Returns desired new window position for the current global mouse. */
 void kwin_drag_pos(const KWindow *kw, int *nx, int *ny);
 

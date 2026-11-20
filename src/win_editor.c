@@ -811,7 +811,7 @@ void editor_window_mouse_press(EditorWindow *ew, int x, int y, int button,
     }
 
     if (ly < ED_TITLE_H) {
-        kwin_begin_drag(&ew->kw);
+        kwin_begin_drag(&ew->kw, x, y);
         if (ew->cbs.drag_started)
             ew->cbs.drag_started(ew->cbs.ud);
         return;

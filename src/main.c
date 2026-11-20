@@ -71,37 +71,35 @@ static void sync_playback(App *app)
     }
 }
 
-/* --- Core playback actions --- */
-
-static void show_playlist(App *app)
+/* The native player window contains both skin panels at the same scale. */
+static void resize_player_buffer(App *app)
 {
-    if (!app->pl_win.kw.visible)
-        kwin_show(&app->pl_win.kw);
-    int px, py, pw, ph;
-    kwin_get_pos(&app->pl_win.kw, &px, &py);
-    kwin_get_size(&app->pl_win.kw, &pw, &ph);
-    SDL_Rect pl_rect = {px, py, pw, ph};
-    bool on_screen = false;
-    int displays = SDL_GetNumVideoDisplays();
-    for (int i = 0; i < displays && !on_screen; i++) {
-        SDL_Rect geo;
-        if (SDL_GetDisplayUsableBounds(i, &geo) == 0)
-            on_screen = SDL_HasIntersection(&pl_rect, &geo);
-    }
-    if (!on_screen) {
-        SDL_Rect geo;
-        if (SDL_GetDisplayUsableBounds(0, &geo) == 0) {
-            int mx, my, mw, mh;
-            kwin_get_pos(&app->main_win.kw, &mx, &my);
-            kwin_get_size(&app->main_win.kw, &mw, &mh);
-            int y = my + mh;
-            if (y + ph > geo.y + geo.h)
-                y = geo.y + 20;
-            kwin_set_pos(&app->pl_win.kw, mx, y);
-        }
-    }
-    config_set_pl_visible(app->config, true);
-    main_window_set_pl_visible(&app->main_win, true);
+    KWindow *player = &app->main_win.kw;
+    bool expanded = app->main_win.pl_visible;
+    player->logical_w = expanded ? app->pl_win.buf.w : MAIN_W;
+    player->logical_h = MAIN_H + (expanded ? app->pl_win.buf.h : 0);
+    if (player->buf.w != player->logical_w || player->buf.h != player->logical_h)
+        kbuf_resize(&player->buf, player->logical_w, player->logical_h);
+}
+
+static void layout_player(App *app, float scale)
+{
+    KWindow *player = &app->main_win.kw;
+    bool expanded = app->main_win.pl_visible;
+    resize_player_buffer(app);
+    SDL_SetWindowResizable(player->win, expanded ? SDL_TRUE : SDL_FALSE);
+    kwin_set_scale_resizable(player, scale, MAIN_W, MAIN_H + (expanded ? PL_MIN_H : 0));
+    if (expanded && player->visible)
+        dock_keep_on_screen(player);
+}
+
+static void on_pl_toggle(void *ud, bool visible)
+{
+    App *app = ud;
+    playlist_window_end_resize(&app->pl_win);
+    main_window_set_pl_visible(&app->main_win, visible);
+    layout_player(app, kwin_scale(&app->main_win.kw));
+    config_set_pl_visible(app->config, visible);
 }
 
 static void render_visible_windows(App *app)
@@ -112,12 +110,17 @@ static void render_visible_windows(App *app)
         info.reconnect_required);
     if (info.live)
         main_window_set_position(&app->main_win, app->remote->position, 0);
-    if (app->main_win.kw.visible)
+    if (app->main_win.kw.visible) {
         main_window_render(&app->main_win);
+        if (app->main_win.pl_visible) {
+            playlist_window_render(&app->pl_win);
+            SDL_Rect dest = {0, MAIN_H, 0, 0};
+            SDL_BlitSurface(app->pl_win.buf.buf, NULL, app->main_win.kw.buf.buf, &dest);
+        }
+        kwin_present(&app->main_win.kw);
+    }
     if (app->eq_win.kw.visible)
         eq_window_render(&app->eq_win);
-    if (app->pl_win.kw.visible)
-        playlist_window_render(&app->pl_win);
     if (app->ed_win.kw.visible)
         editor_window_render(&app->ed_win);
 }
@@ -160,7 +163,7 @@ static void on_eject(void *ud)
     if (!files)
         return;
     if (remote_open_paths(app->remote, (const char *const *)files, count))
-        show_playlist(app);
+        on_pl_toggle(app, true);
     for (int i = 0; i < count; i++)
         free(files[i]);
     free(files);
@@ -256,14 +259,6 @@ static void on_eq_toggle(void *ud, bool visible)
     main_window_set_eq_visible(&app->main_win, visible);
 }
 
-static void on_pl_toggle(void *ud, bool visible)
-{
-    App *app = ud;
-    kwin_set_visible(&app->pl_win.kw, visible);
-    config_set_pl_visible(app->config, visible);
-    main_window_set_pl_visible(&app->main_win, visible);
-}
-
 static void on_ed_toggle(App *app, bool visible)
 {
     kwin_set_visible(&app->ed_win.kw, visible);
@@ -273,9 +268,8 @@ static void on_ed_toggle(App *app, bool visible)
 static void on_scale(void *ud, float scale)
 {
     App *app = ud;
-    /* main_win already scaled itself; mirror across the other windows. */
+    layout_player(app, scale);
     eq_window_set_scale(&app->eq_win, scale);
-    playlist_window_set_scale(&app->pl_win, scale);
     editor_window_set_scale(&app->ed_win, scale);
     config_set_scale(app->config, scale);
 }
@@ -348,7 +342,6 @@ static void on_edit_in_editor(void *ud, const char *filepath)
 
 DEF_DRAG(main_win, main)
 DEF_DRAG(eq_win, eq)
-DEF_DRAG(pl_win, playlist)
 DEF_DRAG(ed_win, editor)
 
 /* --- Playlist model callbacks --- */
@@ -385,7 +378,6 @@ static void cycle_scale(App *app)
             fabsf(SCALE_PRESETS[nearest] - cur))
             nearest = i;
     float scale = SCALE_PRESETS[(nearest + 1) % SCALE_PRESET_COUNT];
-    main_window_set_scale(&app->main_win, scale);
     on_scale(app, scale);
 }
 
@@ -400,7 +392,7 @@ static void handle_hotkey(App *app, SDL_Keycode key, uint16_t mod)
             on_eq_toggle(app, !app->eq_win.kw.visible);
             break;
         case SDLK_e:
-            on_pl_toggle(app, !app->pl_win.kw.visible);
+            on_pl_toggle(app, !app->main_win.pl_visible);
             break;
         case SDLK_d:
             on_ed_toggle(app, !app->ed_win.kw.visible);
@@ -467,7 +459,6 @@ static void dispatch_event(App *app, const SDL_Event *ev)
 {
     uint32_t main_id = kwin_id(&app->main_win.kw);
     uint32_t eq_id = kwin_id(&app->eq_win.kw);
-    uint32_t pl_id = kwin_id(&app->pl_win.kw);
     uint32_t ed_id = kwin_id(&app->ed_win.kw);
 
     switch (ev->type) {
@@ -478,16 +469,18 @@ static void dispatch_event(App *app, const SDL_Event *ev)
     case SDL_MOUSEBUTTONDOWN: {
         uint32_t wid = ev->button.windowID;
         uint16_t mod = SDL_GetModState();
-        if (wid == main_id)
-            main_window_mouse_press(&app->main_win, ev->button.x,
-                                    ev->button.y, ev->button.button);
-        else if (wid == eq_id)
+        if (wid == main_id) {
+            int x, y;
+            kwin_logical(&app->main_win.kw, ev->button.x, ev->button.y, &x, &y);
+            if (y >= MAIN_H && app->main_win.pl_visible)
+                playlist_window_mouse_press(&app->pl_win, ev->button.x, ev->button.y,
+                                            ev->button.button, ev->button.clicks, mod);
+            else if (krect_contains(KRECT(0, 0, MAIN_W, MAIN_H), x, y))
+                main_window_mouse_press(&app->main_win, ev->button.x,
+                                        ev->button.y, ev->button.button);
+        } else if (wid == eq_id)
             eq_window_mouse_press(&app->eq_win, ev->button.x, ev->button.y,
                                   ev->button.button);
-        else if (wid == pl_id)
-            playlist_window_mouse_press(&app->pl_win, ev->button.x,
-                                        ev->button.y, ev->button.button,
-                                        ev->button.clicks, mod);
         else if (wid == ed_id)
             editor_window_mouse_press(&app->ed_win, ev->button.x,
                                       ev->button.y, ev->button.button, mod);
@@ -501,9 +494,8 @@ static void dispatch_event(App *app, const SDL_Event *ev)
                                    ev->motion.y);
         if (wid == eq_id || app->eq_win.kw.dragging)
             eq_window_mouse_move(&app->eq_win, ev->motion.x, ev->motion.y);
-        if (wid == pl_id || app->pl_win.kw.dragging || app->pl_win.resizing)
-            playlist_window_mouse_move(&app->pl_win, ev->motion.x,
-                                       ev->motion.y);
+        if (app->pl_win.resizing)
+            playlist_window_drag_resize(&app->pl_win);
         if (wid == ed_id || app->ed_win.kw.dragging || app->ed_win.resizing)
             editor_window_mouse_move(&app->ed_win, ev->motion.x,
                                      ev->motion.y);
@@ -520,9 +512,8 @@ static void dispatch_event(App *app, const SDL_Event *ev)
             hitmap_is_captured(&app->eq_win.hitmap))
             eq_window_mouse_release(&app->eq_win, ev->button.x,
                                     ev->button.y);
-        if (wid == pl_id || app->pl_win.kw.dragging || app->pl_win.resizing)
-            playlist_window_mouse_release(&app->pl_win, ev->button.x,
-                                          ev->button.y);
+        if (ev->button.button == SDL_BUTTON_LEFT)
+            playlist_window_end_resize(&app->pl_win);
         if (wid == ed_id || app->ed_win.kw.dragging ||
             app->ed_win.resizing || app->ed_win.selecting)
             editor_window_mouse_release(&app->ed_win, ev->button.x,
@@ -532,9 +523,16 @@ static void dispatch_event(App *app, const SDL_Event *ev)
 
     case SDL_MOUSEWHEEL: {
         uint32_t wid = ev->wheel.windowID;
-        if (wid == pl_id)
-            playlist_window_wheel(&app->pl_win, ev->wheel.y);
-        else if (wid == ed_id)
+        if (wid == main_id && app->main_win.pl_visible) {
+            int y;
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+            y = ev->wheel.mouseY;
+#else
+            SDL_GetMouseState(NULL, &y);
+#endif
+            if (y >= (int)lroundf(MAIN_H * kwin_scale(&app->main_win.kw)))
+                playlist_window_wheel(&app->pl_win, ev->wheel.y);
+        } else if (wid == ed_id)
             editor_window_wheel(&app->ed_win, ev->wheel.y,
                                 SDL_GetModState());
         break;
@@ -542,7 +540,7 @@ static void dispatch_event(App *app, const SDL_Event *ev)
 
     case SDL_KEYDOWN: {
         uint32_t wid = ev->key.windowID;
-        uint16_t mod = SDL_GetModState();
+        uint16_t mod = ev->key.keysym.mod;
         if (wid == ed_id && (mod & KMOD_CTRL)) {
             editor_window_key(&app->ed_win, ev->key.keysym.sym, mod);
             break;
@@ -570,8 +568,6 @@ static void dispatch_event(App *app, const SDL_Event *ev)
             kw = &app->main_win.kw;
         else if (wid == eq_id)
             kw = &app->eq_win.kw;
-        else if (wid == pl_id)
-            kw = &app->pl_win.kw;
         else if (wid == ed_id)
             kw = &app->ed_win.kw;
         if (!kw)
@@ -591,11 +587,15 @@ static void dispatch_event(App *app, const SDL_Event *ev)
             break;
         case SDL_WINDOWEVENT_SIZE_CHANGED: {
             float sc = kwin_scale(kw);
-            int lw = (int)lroundf(ev->window.data1 / sc);
-            int lh = (int)lroundf(ev->window.data2 / sc);
-            if (wid == pl_id)
-                playlist_window_resize(&app->pl_win, lw, lh);
-            else if (wid == ed_id)
+            /* A toggle or scale change can supersede a queued resize. */
+            int w, h;
+            kwin_get_size(kw, &w, &h);
+            int lw = (int)lroundf(w / sc);
+            int lh = (int)lroundf(h / sc);
+            if (wid == main_id && app->main_win.pl_visible) {
+                playlist_window_resize(&app->pl_win, lw, lh - MAIN_H);
+                resize_player_buffer(app);
+            } else if (wid == ed_id)
                 editor_window_resize(&app->ed_win, lw, lh);
             break;
         }
@@ -630,10 +630,8 @@ static void save_state(App *app)
     config_set_window_pos(app->config, "main", x, y);
     kwin_get_pos(&app->eq_win.kw, &x, &y);
     config_set_window_pos(app->config, "eq", x, y);
-    kwin_get_pos(&app->pl_win.kw, &x, &y);
-    config_set_window_pos(app->config, "playlist", x, y);
-    config_set_pl_width(app->config, app->pl_win.pl_w);
-    config_set_pl_height(app->config, app->pl_win.pl_h);
+    config_set_pl_width(app->config, app->pl_win.buf.w);
+    config_set_pl_height(app->config, app->pl_win.buf.h);
     kwin_get_pos(&app->ed_win.kw, &x, &y);
     config_set_window_pos(app->config, "editor", x, y);
     config_set_ed_width(app->config, app->ed_win.ed_w);
@@ -641,7 +639,7 @@ static void save_state(App *app)
     /* Re-derive visibility from the live windows so closing one via its
      * own close button does not persist a stale true. */
     config_set_eq_visible(app->config, app->eq_win.kw.visible);
-    config_set_pl_visible(app->config, app->pl_win.kw.visible);
+    config_set_pl_visible(app->config, app->main_win.pl_visible);
     config_set_ed_visible(app->config, app->ed_win.kw.visible);
     config_sync(app->config);
 }
@@ -766,15 +764,13 @@ int main(int argc, char **argv)
     /* Create windows */
     main_window_init(&app->main_win, &app->skin);
     eq_window_init(&app->eq_win, &app->skin);
-    playlist_window_init(&app->pl_win, &app->skin, app->playlist);
+    playlist_window_init(&app->pl_win, &app->main_win.kw, &app->skin, app->playlist);
     editor_window_init(&app->ed_win, &app->skin);
 
     /* Restore saved window sizes (clamped to minimums) */
     playlist_window_resize(&app->pl_win,
-                           KA_MAX(PL_MIN_W, config_pl_width(app->config)),
-                           KA_MAX(PL_MIN_H, config_pl_height(app->config)));
-    SDL_SetWindowSize(app->pl_win.kw.win, app->pl_win.pl_w,
-                      app->pl_win.pl_h);
+                           config_pl_width(app->config), config_pl_height(app->config));
+    main_window_set_pl_visible(&app->main_win, config_pl_visible(app->config));
     editor_window_resize(&app->ed_win,
                          KA_MAX(ED_MIN_W, config_ed_width(app->config)),
                          KA_MAX(ED_MIN_H, config_ed_height(app->config)));
@@ -788,10 +784,7 @@ int main(int argc, char **argv)
             ? cli_scale
             : (float)KA_CLAMP(config_scale(app->config), SCALE_MIN,
                               SCALE_MAX);
-    if (ui_scale != 1.0f) {
-        main_window_set_scale(&app->main_win, ui_scale);
-        on_scale(app, ui_scale);
-    }
+    on_scale(app, ui_scale);
 
     /* --- Wire callbacks --- */
     app->main_win.cbs = (MainWindowCallbacks){
@@ -832,9 +825,8 @@ int main(int argc, char **argv)
         .add_files_requested = on_add_files,
         .add_dir_requested = on_add_dir,
         .edit_in_editor = on_edit_in_editor,
-        .drag_started = drag_start_playlist,
-        .drag_moved = drag_move_playlist,
-        .drag_ended = drag_end_playlist,
+        .drag_started = drag_start_main,
+        .set_visible = on_pl_toggle,
         .ud = app,
     };
 
@@ -852,7 +844,6 @@ int main(int argc, char **argv)
     dock_init(&app->dock);
     dock_register(&app->dock, "main", &app->main_win.kw);
     dock_register(&app->dock, "eq", &app->eq_win.kw);
-    dock_register(&app->dock, "playlist", &app->pl_win.kw);
     dock_register(&app->dock, "editor", &app->ed_win.kw);
 
     /* --- Position windows --- */
@@ -862,8 +853,6 @@ int main(int argc, char **argv)
         kwin_set_pos(&app->main_win.kw, x, y);
     if (config_get_window_pos(app->config, "eq", &x, &y))
         kwin_set_pos(&app->eq_win.kw, x, y);
-    if (config_get_window_pos(app->config, "playlist", &x, &y))
-        kwin_set_pos(&app->pl_win.kw, x, y);
     if (config_get_window_pos(app->config, "editor", &x, &y))
         kwin_set_pos(&app->ed_win.kw, x, y);
 
@@ -873,15 +862,13 @@ int main(int argc, char **argv)
         kwin_show(&app->eq_win.kw);
         main_window_set_eq_visible(&app->main_win, true);
     }
-    if (config_pl_visible(app->config)) {
-        kwin_show(&app->pl_win.kw);
-        main_window_set_pl_visible(&app->main_win, true);
-    }
     if (config_ed_visible(app->config))
         kwin_show(&app->ed_win.kw);
 
     if (!have_main_pos)
         dock_position_default(&app->dock);
+    else if (app->main_win.pl_visible)
+        dock_keep_on_screen(&app->main_win.kw);
 
     remote_poll(app->remote, true);
     sync_playback(app);
@@ -898,7 +885,7 @@ int main(int argc, char **argv)
 
     /* --- Load files from command line --- */
     if (remote_open_paths(app->remote, files, n_files))
-        show_playlist(app);
+        on_pl_toggle(app, true);
 
     /* --- Main loop --- */
     /* KILIXAMP_EXIT_AFTER_MS: quit cleanly after N ms (headless CI/smoke
@@ -936,9 +923,9 @@ int main(int argc, char **argv)
     save_state(app);
 
     remote_free(app->remote);
+    playlist_window_destroy(&app->pl_win);
     main_window_destroy(&app->main_win);
     eq_window_destroy(&app->eq_win);
-    playlist_window_destroy(&app->pl_win);
     editor_window_destroy(&app->ed_win);
     playlist_free(app->playlist);
     skin_destroy(&app->skin);

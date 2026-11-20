@@ -130,7 +130,7 @@ class SharedPlayback(unittest.TestCase):
         if not shutil.which("Xvfb") or not shutil.which("xdotool"):
             self.skipTest("Xvfb and xdotool are required for GUI checks")
         reader, writer = os.pipe()
-        self.spawn(["Xvfb", "-displayfd", str(writer), "-screen", "0", "1280x720x24", "-nolisten", "tcp"], pass_fds=(writer,))
+        self.spawn(["Xvfb", "-displayfd", str(writer), "-screen", "0", "1280x720x24", "-nolisten", "tcp", "-noreset"], pass_fds=(writer,))
         os.close(writer)
         try:
             self.assertTrue(select.select([reader], [], [], 5)[0])
@@ -144,7 +144,9 @@ class SharedPlayback(unittest.TestCase):
 
     def window(self, process, env):
         def find():
-            result = subprocess.run(["xdotool", "search", "--onlyvisible", "--pid", str(process.pid), "--name", "^kilix-amp$"],
+            if process.poll() is not None:
+                self.fail(f"Amp exited with {process.returncode}\n{Path(self.log.name).read_text()}")
+            result = subprocess.run(["xdotool", "search", "--all", "--onlyvisible", "--pid", str(process.pid), "--name", "^kilix-amp$"],
                                     env=env, capture_output=True, text=True)
             return result.stdout.splitlines()[0] if result.returncode == 0 else None
         return wait_for(find)
@@ -273,6 +275,66 @@ class SharedPlayback(unittest.TestCase):
         status = self.playing()
         self.assertEqual(status["pid"], service.pid)
         self.assertEqual(status["index"], 1)
+
+    def test_player_and_playlist_share_one_native_window(self):
+        config = Path(self.env["XDG_CONFIG_HOME"]) / "kilix-amp/kilix-amp.ini"
+        config.parent.mkdir(parents=True)
+        config.write_text("[ui]\nmain_x=100\nmain_y=80\nplaylist_x=900\nplaylist_y=400\n")
+        self.start(self.tone, self.other)
+        self.playing()
+        self.command("pause")
+        env = self.display()
+
+        def xdo(*args):
+            return subprocess.check_output(["xdotool", *map(str, args)], env=env, text=True).strip()
+
+        def geometry():
+            fields = dict(line.split("=") for line in xdo("getwindowgeometry", "--shell", window).splitlines())
+            return tuple(int(fields[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+
+        def drag(x, y, dx, dy):
+            xdo("mousemove", "--window", window, x, y, "mousedown", 1, "sleep", ".08",
+                "mousemove_relative", "--", dx, dy, "sleep", ".08", "mouseup", 1)
+
+        gui = self.spawn([str(AMP)], env)
+        window = self.window(gui, env)
+        self.assertEqual(xdo("search", "--onlyvisible", "--pid", gui.pid).splitlines(), [window])
+        self.assertEqual(geometry(), (100, 80, 275, 348))
+        xdo("windowfocus", "--sync", window, "key", "Down")
+        wait_for(lambda: self.command("state")["volume"] == 75)
+
+        # Grab the lower title bar, then grow the playlist by its own grip.
+        drag(72, 124, 50, 35)
+        wait_for(lambda: geometry() == (150, 115, 275, 348))
+        drag(270, 343, 60, 30)
+        wait_for(lambda: geometry() == (150, 115, 335, 378))
+        xdo("mousemove", "--window", window, 55, 154, "click", "--repeat", 2, 1)
+        wait_for(lambda: self.command("state")["file"] == str(self.other))
+
+        # The playlist close button and the player's PL button reuse the same window.
+        xdo("mousemove", "--window", window, 330, 124, "click", 1)
+        wait_for(lambda: geometry()[2:] == (275, 116))
+        xdo("mousemove", "--window", window, 250, 63, "click", 1)
+        wait_for(lambda: geometry()[2:] == (335, 378))
+        xdo("windowfocus", window, "key", "alt+e")
+        wait_for(lambda: geometry()[2:] == (275, 116))
+        xdo("mousemove", "--window", window, 268, 7, "click", 1)
+        self.assertEqual(gui.wait(timeout=5), 0)
+
+        # Restart collapsed and restore the saved playlist dimensions at 1.5x.
+        gui = self.spawn([str(AMP), "--scale", "1.5"], env)
+        window = self.window(gui, env)
+        self.assertEqual(geometry(), (150, 115, 413, 174))
+        xdo("windowfocus", window, "key", "alt+e")
+        wait_for(lambda: geometry() == (150, 115, 503, 567))
+        self.assertEqual(xdo("search", "--onlyvisible", "--pid", gui.pid).splitlines(), [window])
+        xdo("mousemove", "--window", window, 82, 212, "click", "--repeat", 2, 1)
+        wait_for(lambda: self.command("state")["file"] == str(self.tone))
+
+        xdo("key", "alt+e")
+        wait_for(lambda: geometry()[2:] == (413, 174))
+        xdo("windowmove", window, 820, 520, "key", "alt+e")
+        wait_for(lambda: geometry() == (777, 153, 503, 567))
 
     def test_gui_opens_first_selected_track_after_another_client_appends(self):
         self.start(self.tone)

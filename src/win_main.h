@@ -76,7 +76,6 @@ void main_window_set_shuffle(MainWindow *mw, bool on);
 void main_window_set_repeat(MainWindow *mw, bool on);
 void main_window_set_eq_visible(MainWindow *mw, bool v);
 void main_window_set_pl_visible(MainWindow *mw, bool v);
-void main_window_set_scale(MainWindow *mw, float scale);
 
 void main_window_mouse_press(MainWindow *mw, int x, int y, int button);
 void main_window_mouse_move(MainWindow *mw, int x, int y);

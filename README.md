@@ -1,8 +1,7 @@
 # kilix-amp - Winamp Clone for Linux, in C
 
 A pixel-faithful recreation of the classic Winamp 2.x music player, written
-in C11 with SDL2. This is a full rewrite of the Python/Qt "nixamp" project
-with the same feature set and window-for-window architecture.
+in C11 with SDL2. It is a rewrite of the Python/Qt "nixamp" project.
 
 Ships in Plebian-OS as the Media Player: `pleb install` builds it at first boot
 (`kilix amp --install-only`) at the commit the Kilix content catalog pins for
@@ -17,7 +16,7 @@ player as an X application in a Kilix pane.
 ## Features
 
 - **Classic Winamp 2.x UI** - Bitmap-based skin rendering with all the classic elements
-- **4-window layout** - Main player, Equalizer, Playlist, and waveform Editor
+- **Docked playlist** - The track list sits directly below the player in one window. Drag either title bar to move both. The PL button or Alt+E shows and hides the list.
 - **Skin support** - Load .wsz skin files or skin directories (in-house ZIP reader)
 - **10-band EQ** - Presets for kilix-mpv's audio filters and the native EnCodec biquad chain
 - **Spectrum analyzer** - 75-bar display with peak dots, oscilloscope mode (in-house FFT)

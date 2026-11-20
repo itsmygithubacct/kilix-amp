@@ -175,6 +175,21 @@ void dock_end_drag(DockManager *dm)
     memset(dm->docked, 0, sizeof(dm->docked));
 }
 
+void dock_keep_on_screen(KWindow *win)
+{
+    int display = SDL_GetWindowDisplayIndex(win->win);
+    SDL_Rect bounds;
+    if (display < 0 || SDL_GetDisplayUsableBounds(display, &bounds) != 0)
+        return;
+    int x, y, w, h;
+    kwin_get_pos(win, &x, &y);
+    kwin_get_size(win, &w, &h);
+    int nx = KA_CLAMP(x, bounds.x, bounds.x + KA_MAX(0, bounds.w - w));
+    int ny = KA_CLAMP(y, bounds.y, bounds.y + KA_MAX(0, bounds.h - h));
+    if (nx != x || ny != y)
+        kwin_set_pos(win, nx, ny);
+}
+
 void dock_position_default(DockManager *dm)
 {
     int main_idx = find(dm, "main");
@@ -188,23 +203,13 @@ void dock_position_default(DockManager *dm)
 
     int mw, mh;
     kwin_get_size(main_win, &mw, &mh);
-    int mx = geo.x + geo.w / 2 - mw / 2;
-    int my = geo.y + geo.h / 2 - 200;
+    int mx = geo.x + KA_MAX(0, (geo.w - mw) / 2);
+    int my = geo.y + KA_MAX(0, (geo.h - mh) / 2);
     kwin_set_pos(main_win, mx, my);
 
     int eq_idx = find(dm, "eq");
-    int eq_h = 0;
-    if (eq_idx >= 0) {
+    if (eq_idx >= 0)
         kwin_set_pos(dm->windows[eq_idx], mx, my + mh);
-        if (dm->windows[eq_idx]->visible) {
-            int w;
-            kwin_get_size(dm->windows[eq_idx], &w, &eq_h);
-        }
-    }
-
-    int pl_idx = find(dm, "playlist");
-    if (pl_idx >= 0)
-        kwin_set_pos(dm->windows[pl_idx], mx, my + mh + eq_h);
 
     int ed_idx = find(dm, "editor");
     if (ed_idx >= 0 && dm->windows[ed_idx]->visible)

@@ -114,14 +114,11 @@ void kwin_get_size(const KWindow *kw, int *w, int *h)
     SDL_GetWindowSize(kw->win, w, h);
 }
 
-void kwin_begin_drag(KWindow *kw)
+void kwin_begin_drag(KWindow *kw, int x, int y)
 {
-    int mx, my, wx, wy;
-    SDL_GetGlobalMouseState(&mx, &my);
-    kwin_get_pos(kw, &wx, &wy);
     kw->dragging = true;
-    kw->drag_off_x = mx - wx;
-    kw->drag_off_y = my - wy;
+    kw->drag_off_x = x;
+    kw->drag_off_y = y;
     SDL_CaptureMouse(SDL_TRUE);
 }
 
