@@ -374,7 +374,7 @@ static void show_context_menu(MainWindow *mw)
     items[n++] = (MenuItem){"OPEN FILE...", M_OPEN};
     items[n++] = MENU_SEPARATOR;
     items[n++] = MENU_HEADER("SIZE");
-    float cur = kwin_scale(&mw->kw);
+    float cur = mw->preferred_scale;
     for (int s = 0; s < SCALE_PRESET_COUNT; s++) {
         float sc = SCALE_PRESETS[s];
         snprintf(size_labels[s], sizeof(size_labels[s]),

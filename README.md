@@ -54,8 +54,10 @@ playback is optional and built with `make ENCODEC=1`; see
 ./kilix-amp --scale 3                # UI scale 1-4 (--double-size = --scale 2)
 ```
 
-The UI scale can also be changed at runtime from the right-click menu
-(SIZE section) or by pressing `D` (cycles 1x-4x); it persists across runs.
+Choose a UI scale from the right-click SIZE menu or press `D` to cycle through
+the presets. On a small display, Amp fits the playlist into the available space
+and reduces zoom if the controls and minimum playlist still exceed it. Your
+preferred zoom and playlist size are restored when space permits.
 
 On first start a default skin is generated at
 `${XDG_DATA_HOME:-~/.local/share}/kilix-amp/skins/default`. Settings are saved

@@ -79,7 +79,7 @@ void kwin_set_scale_fixed(KWindow *kw, float scale)
 void kwin_set_scale_resizable(KWindow *kw, float scale, int min_w,
                               int min_h)
 {
-    kw->scale = KA_CLAMP(scale, SCALE_MIN, SCALE_MAX);
+    kw->scale = scale;
     kw->buf.scale = kw->scale;
     SDL_SetWindowMinimumSize(kw->win, scaled(min_w, kw->scale),
                              scaled(min_h, kw->scale));
@@ -112,6 +112,16 @@ void kwin_set_pos(KWindow *kw, int x, int y)
 void kwin_get_size(const KWindow *kw, int *w, int *h)
 {
     SDL_GetWindowSize(kw->win, w, h);
+}
+
+bool kwin_display_bounds(const KWindow *kw, SDL_Rect *bounds)
+{
+    int display = SDL_GetWindowDisplayIndex(kw->win);
+    if (display < 0)
+        display = 0;
+    return (SDL_GetDisplayUsableBounds(display, bounds) == 0 ||
+            SDL_GetDisplayBounds(display, bounds) == 0) &&
+           bounds->w > 0 && bounds->h > 0;
 }
 
 void kwin_begin_drag(KWindow *kw, int x, int y)

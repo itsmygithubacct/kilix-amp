@@ -177,9 +177,8 @@ void dock_end_drag(DockManager *dm)
 
 void dock_keep_on_screen(KWindow *win)
 {
-    int display = SDL_GetWindowDisplayIndex(win->win);
     SDL_Rect bounds;
-    if (display < 0 || SDL_GetDisplayUsableBounds(display, &bounds) != 0)
+    if (!kwin_display_bounds(win, &bounds))
         return;
     int x, y, w, h;
     kwin_get_pos(win, &x, &y);
@@ -196,9 +195,8 @@ void dock_position_default(DockManager *dm)
     if (main_idx < 0)
         return;
     KWindow *main_win = dm->windows[main_idx];
-    int di = SDL_GetWindowDisplayIndex(main_win->win);
     SDL_Rect geo;
-    if (di < 0 || SDL_GetDisplayUsableBounds(di, &geo) != 0)
+    if (!kwin_display_bounds(main_win, &geo))
         return;
 
     int mw, mh;

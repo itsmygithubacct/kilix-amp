@@ -46,6 +46,7 @@ typedef struct {
     int position_sec, duration_sec;
     int bitrate, sample_rate, channels;
     bool eq_visible, pl_visible;
+    float preferred_scale;
     bool seeking;
     bool live;
     char live_status[40];

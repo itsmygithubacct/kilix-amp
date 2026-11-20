@@ -82,14 +82,34 @@ static void resize_player_buffer(App *app)
         kbuf_resize(&player->buf, player->logical_w, player->logical_h);
 }
 
-static void layout_player(App *app, float scale)
+static void layout_player(App *app)
 {
     KWindow *player = &app->main_win.kw;
     bool expanded = app->main_win.pl_visible;
+    float scale = app->main_win.preferred_scale;
+    int width = config_pl_width(app->config);
+    int height = config_pl_height(app->config);
+    SDL_Rect bounds;
+    if (kwin_display_bounds(player, &bounds)) {
+        /* Keep the controls at the requested zoom while a minimum playlist
+         * fits. Both title bars use the same scale across show/hide. */
+        scale = fminf(scale, fminf((float)bounds.w / MAIN_W,
+                                  (float)bounds.h / (MAIN_H + PL_MIN_H)));
+        width = KA_MIN(width, (int)floorf(bounds.w / scale));
+        height = KA_MIN(height, (int)floorf(bounds.h / scale) - MAIN_H);
+        int max_w, max_h;
+        SDL_GetWindowMaximumSize(player->win, &max_w, &max_h);
+        if (max_w != bounds.w || max_h != bounds.h) {
+            SDL_SetWindowMinimumSize(player->win, 1, 1);
+            SDL_SetWindowMaximumSize(player->win, bounds.w, bounds.h);
+        }
+    }
+    if (expanded)
+        playlist_window_resize(&app->pl_win, width, height);
     resize_player_buffer(app);
     SDL_SetWindowResizable(player->win, expanded ? SDL_TRUE : SDL_FALSE);
     kwin_set_scale_resizable(player, scale, MAIN_W, MAIN_H + (expanded ? PL_MIN_H : 0));
-    if (expanded && player->visible)
+    if (player->visible)
         dock_keep_on_screen(player);
 }
 
@@ -98,7 +118,7 @@ static void on_pl_toggle(void *ud, bool visible)
     App *app = ud;
     playlist_window_end_resize(&app->pl_win);
     main_window_set_pl_visible(&app->main_win, visible);
-    layout_player(app, kwin_scale(&app->main_win.kw));
+    layout_player(app);
     config_set_pl_visible(app->config, visible);
 }
 
@@ -268,7 +288,10 @@ static void on_ed_toggle(App *app, bool visible)
 static void on_scale(void *ud, float scale)
 {
     App *app = ud;
-    layout_player(app, scale);
+    if (!isfinite(scale))
+        scale = 1.0f;
+    app->main_win.preferred_scale = scale;
+    layout_player(app);
     eq_window_set_scale(&app->eq_win, scale);
     editor_window_set_scale(&app->ed_win, scale);
     config_set_scale(app->config, scale);
@@ -370,7 +393,7 @@ static void on_current_changed(void *ud, int idx)
 /* D hotkey: cycle through the SIZE menu presets. */
 static void cycle_scale(App *app)
 {
-    float cur = kwin_scale(&app->main_win.kw);
+    float cur = app->main_win.preferred_scale;
     /* Find the nearest preset, then advance to the next one. */
     int nearest = 0;
     for (int i = 1; i < SCALE_PRESET_COUNT; i++)
@@ -593,12 +616,29 @@ static void dispatch_event(App *app, const SDL_Event *ev)
             int lw = (int)lroundf(w / sc);
             int lh = (int)lroundf(h / sc);
             if (wid == main_id && app->main_win.pl_visible) {
-                playlist_window_resize(&app->pl_win, lw, lh - MAIN_H);
+                /* Save only the axes the user resized. A fitted dimension
+                 * must not replace the preferred one on a smaller display. */
+                int width = app->pl_win.buf.w, height = app->pl_win.buf.h;
+                if (w != (int)lroundf(kw->logical_w * sc)) {
+                    width = KA_MAX(PL_MIN_W, lw);
+                    config_set_pl_width(app->config, width);
+                }
+                if (h != (int)lroundf(kw->logical_h * sc)) {
+                    height = KA_MAX(PL_MIN_H, lh - MAIN_H);
+                    config_set_pl_height(app->config, height);
+                }
+                playlist_window_resize(&app->pl_win, width, height);
                 resize_player_buffer(app);
             } else if (wid == ed_id)
                 editor_window_resize(&app->ed_win, lw, lh);
             break;
         }
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+        case SDL_WINDOWEVENT_DISPLAY_CHANGED:
+            if (wid == main_id)
+                layout_player(app);
+            break;
+#endif
         default:
             break;
         }
@@ -630,8 +670,6 @@ static void save_state(App *app)
     config_set_window_pos(app->config, "main", x, y);
     kwin_get_pos(&app->eq_win.kw, &x, &y);
     config_set_window_pos(app->config, "eq", x, y);
-    config_set_pl_width(app->config, app->pl_win.buf.w);
-    config_set_pl_height(app->config, app->pl_win.buf.h);
     kwin_get_pos(&app->ed_win.kw, &x, &y);
     config_set_window_pos(app->config, "editor", x, y);
     config_set_ed_width(app->config, app->ed_win.ed_w);
@@ -767,9 +805,7 @@ int main(int argc, char **argv)
     playlist_window_init(&app->pl_win, &app->main_win.kw, &app->skin, app->playlist);
     editor_window_init(&app->ed_win, &app->skin);
 
-    /* Restore saved window sizes (clamped to minimums) */
-    playlist_window_resize(&app->pl_win,
-                           config_pl_width(app->config), config_pl_height(app->config));
+    /* Apply the player size after restoring its display position. */
     main_window_set_pl_visible(&app->main_win, config_pl_visible(app->config));
     editor_window_resize(&app->ed_win,
                          KA_MAX(ED_MIN_W, config_ed_width(app->config)),
@@ -784,7 +820,6 @@ int main(int argc, char **argv)
             ? cli_scale
             : (float)KA_CLAMP(config_scale(app->config), SCALE_MIN,
                               SCALE_MAX);
-    on_scale(app, ui_scale);
 
     /* --- Wire callbacks --- */
     app->main_win.cbs = (MainWindowCallbacks){
@@ -856,6 +891,10 @@ int main(int argc, char **argv)
     if (config_get_window_pos(app->config, "editor", &x, &y))
         kwin_set_pos(&app->ed_win.kw, x, y);
 
+    on_scale(app, ui_scale);
+    if (have_main_pos)
+        dock_keep_on_screen(&app->main_win.kw);
+
     /* Show windows */
     kwin_show(&app->main_win.kw);
     if (config_eq_visible(app->config)) {
@@ -867,8 +906,6 @@ int main(int argc, char **argv)
 
     if (!have_main_pos)
         dock_position_default(&app->dock);
-    else if (app->main_win.pl_visible)
-        dock_keep_on_screen(&app->main_win.kw);
 
     remote_poll(app->remote, true);
     sync_playback(app);

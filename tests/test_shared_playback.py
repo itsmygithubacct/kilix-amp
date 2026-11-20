@@ -41,6 +41,15 @@ def wait_for(predicate, timeout=5):
     raise AssertionError(f"condition did not become true (last result: {last!r})")
 
 
+def xdotool(env, *args):
+    return subprocess.check_output(["xdotool", *map(str, args)], env=env, text=True).strip()
+
+
+def window_geometry(env, window):
+    fields = dict(line.split("=") for line in xdotool(env, "getwindowgeometry", "--shell", window).splitlines())
+    return tuple(int(fields[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+
+
 class SharedPlayback(unittest.TestCase):
     def setUp(self):
         if not shutil.which(os.environ.get("KILIX_MPV", "kilix-mpv")):
@@ -126,11 +135,11 @@ class SharedPlayback(unittest.TestCase):
         spec.loader.exec_module(module)
         return module.Backend(str(self.socket))
 
-    def display(self):
+    def display(self, screen="1280x720x24"):
         if not shutil.which("Xvfb") or not shutil.which("xdotool"):
             self.skipTest("Xvfb and xdotool are required for GUI checks")
         reader, writer = os.pipe()
-        self.spawn(["Xvfb", "-displayfd", str(writer), "-screen", "0", "1280x720x24", "-nolisten", "tcp", "-noreset"], pass_fds=(writer,))
+        self.spawn(["Xvfb", "-displayfd", str(writer), "-screen", "0", screen, "-nolisten", "tcp", "-noreset"], pass_fds=(writer,))
         os.close(writer)
         try:
             self.assertTrue(select.select([reader], [], [], 5)[0])
@@ -286,11 +295,10 @@ class SharedPlayback(unittest.TestCase):
         env = self.display()
 
         def xdo(*args):
-            return subprocess.check_output(["xdotool", *map(str, args)], env=env, text=True).strip()
+            return xdotool(env, *args)
 
         def geometry():
-            fields = dict(line.split("=") for line in xdo("getwindowgeometry", "--shell", window).splitlines())
-            return tuple(int(fields[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+            return window_geometry(env, window)
 
         def drag(x, y, dx, dy):
             xdo("mousemove", "--window", window, x, y, "mousedown", 1, "sleep", ".08",
@@ -335,6 +343,35 @@ class SharedPlayback(unittest.TestCase):
         wait_for(lambda: geometry()[2:] == (413, 174))
         xdo("windowmove", window, 820, 520, "key", "alt+e")
         wait_for(lambda: geometry() == (777, 153, 503, 567))
+
+    def test_docked_player_fits_small_display_and_restores_preferred_size(self):
+        config = Path(self.env["XDG_CONFIG_HOME"]) / "kilix-amp/kilix-amp.ini"
+        config.parent.mkdir(parents=True)
+        config.write_text("[ui]\nscale=2\npl_width=475\npl_height=380\nmain_x=800\nmain_y=600\n")
+        self.start()
+        small = self.display("640x480x24")
+        gui = self.spawn([str(AMP)], small)
+        window = self.window(gui, small)
+        self.assertEqual(window_geometry(small, window), (0, 0, 640, 480))
+        xdotool(small, "windowfocus", "--sync", window, "key", "alt+e")
+        wait_for(lambda: window_geometry(small, window)[2:] == (550, 232))
+        xdotool(small, "key", "alt+e")
+        wait_for(lambda: window_geometry(small, window)[2:] == (640, 480))
+
+        # Cycle through the larger zoom presets even when several must fit
+        # the same physical screen. The last press returns to the 1x preset.
+        for _ in range(4):
+            xdotool(small, "key", "d")
+        wait_for(lambda: window_geometry(small, window)[2:] == (475, 480))
+        xdotool(small, "key", "d", "d")
+        wait_for(lambda: window_geometry(small, window)[2:] == (640, 480))
+        xdotool(small, "mousemove", "--window", window, 536, 14, "click", 1)
+        self.assertEqual(gui.wait(timeout=5), 0)
+
+        large = self.display("1280x1024x24")
+        gui = self.spawn([str(AMP)], large)
+        window = self.window(gui, large)
+        self.assertEqual(window_geometry(large, window)[2:], (950, 992))
 
     def test_gui_opens_first_selected_track_after_another_client_appends(self):
         self.start(self.tone)
