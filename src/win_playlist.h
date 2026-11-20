@@ -37,6 +37,7 @@ typedef struct {
     long long service_pid, current_entry_id;
     int anchor; /* -1 = none */
 
+    int thumb_grab_y; /* offset inside the scrollbar thumb, -1 when released */
     bool resizing;
     int resize_start_w, resize_start_h;
     int resize_start_x, resize_start_y;
@@ -53,8 +54,8 @@ void playlist_window_on_current_changed(PlaylistWindow *pw, int idx);
 /* Coordinates are native pixels relative to the shared player window. */
 void playlist_window_mouse_press(PlaylistWindow *pw, int x, int y,
                                  int button, int clicks, uint16_t mod);
-void playlist_window_drag_resize(PlaylistWindow *pw);
-void playlist_window_end_resize(PlaylistWindow *pw);
+void playlist_window_mouse_move(PlaylistWindow *pw, int y);
+void playlist_window_end_drag(PlaylistWindow *pw);
 void playlist_window_wheel(PlaylistWindow *pw, int delta_y);
 /* Handle a file/dir/playlist path dropped onto the window. */
 void playlist_window_drop(PlaylistWindow *pw, const char *path);

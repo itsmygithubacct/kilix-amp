@@ -191,7 +191,7 @@ extern const int EQ_BAND_X[10];
 #define PL_BR_CORNER      KRECT(126, 72, 150, 38)
 #define PL_BOTTOM_STRETCH KRECT(179, 0, 25, 38)
 
-#define PL_SCROLLBAR_X_OFFSET (-20) /* from right edge */
+#define PL_SCROLLBAR_X_OFFSET (-15) /* from right edge */
 #define PL_SCROLLBAR_W 8
 #define PL_ITEM_H      13
 

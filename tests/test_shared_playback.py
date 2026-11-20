@@ -389,6 +389,37 @@ class SharedPlayback(unittest.TestCase):
         window = self.window(gui, large)
         self.assertEqual(window_geometry(large, window)[2:], (950, 992))
 
+    def test_playlist_scrollbar_drags_to_both_ends_at_fractional_zoom(self):
+        listing = self.path / "scroll.m3u"
+        listing.write_text("#EXTM3U\n" + (str(self.tone) + "\n") * 40)
+        self.start()
+        self.command("add", path=str(listing))
+        env = self.display()
+        gui = self.spawn([str(AMP), "--scale", "1.5"], env)
+        window = self.window(gui, env)
+        xdotool(env, "windowfocus", "--sync", window, "key", "Down")
+        wait_for(lambda: self.command("state")["volume"] == 75)
+
+        def drag_thumb(start_y, end_y):
+            xdotool(env, "mousemove", "--window", window, 394, start_y, "mousedown", 1,
+                    "sleep", ".05", "mousemove", "--window", window, 425, end_y,
+                    "sleep", ".05", "mouseup", 1)
+
+        def play_first_visible():
+            xdotool(env, "mousemove", "--window", window, 65, 213, "click", "--repeat", 2, 1)
+
+        drag_thumb(219, 590)
+        # Appending a row and scrolling horizontally leave the visible rows in place.
+        self.command("add", path=str(self.other))
+        xdotool(env, "key", "Up")
+        wait_for(lambda: self.command("state")["volume"] == 80)
+        xdotool(env, "mousemove", "--window", window, 65, 213, "click", 7)
+        play_first_visible()
+        wait_for(lambda: self.command("state")["index"] == 27)
+        drag_thumb(414, 125)
+        play_first_visible()
+        wait_for(lambda: self.command("state")["index"] == 0)
+
     def test_gui_removes_the_selected_duplicate_after_another_client_reorders(self):
         listing = self.path / "duplicates.m3u"
         listing.write_text("#EXTM3U\n" + "".join(

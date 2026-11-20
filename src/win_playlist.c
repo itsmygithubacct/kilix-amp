@@ -1,5 +1,6 @@
 #include "win_playlist.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +8,7 @@
 #include "consts.h"
 #include "font4x6.h"
 #include "menu.h"
+#include "widgets.h"
 
 void playlist_window_init(PlaylistWindow *pw, KWindow *player, Skin *skin, Playlist *pl)
 {
@@ -15,6 +17,7 @@ void playlist_window_init(PlaylistWindow *pw, KWindow *player, Skin *skin, Playl
     pw->playlist = pl;
     pw->player = player;
     pw->anchor = -1;
+    pw->thumb_grab_y = -1;
     kbuf_init(&pw->buf, PL_MIN_W, PL_DEFAULT_H);
     text_renderer_init(&pw->text, skin_bitmap(skin, "text"));
     playlist_window_on_playlist_changed(pw);
@@ -159,26 +162,33 @@ static void draw_items(PlaylistWindow *pw)
     SDL_SetClipRect(buf, NULL);
 }
 
+static bool scrollbar_rects(const PlaylistWindow *pw, KRect *track, KRect *thumb)
+{
+    int maximum = max_scroll(pw);
+    if (!maximum)
+        return false;
+    *track = KRECT(pw->buf.w + PL_SCROLLBAR_X_OFFSET, PL_TITLE_H,
+                   PL_SCROLLBAR_W, pw->buf.h - PL_TITLE_H - 38);
+    *thumb = *track;
+    thumb->h = KA_MAX(10, (int)((double)track->h * visible_items(pw) / pw->row_count));
+    thumb->y += (int)lround((double)pw->scroll_offset * (track->h - thumb->h) / maximum);
+    return true;
+}
+
 static void draw_scrollbar(PlaylistWindow *pw)
 {
-    SDL_Surface *buf = pw->buf.buf;
-    int sb_x = pw->buf.w - 15;
-    int sb_y = PL_TITLE_H;
-    int sb_h = pw->buf.h - PL_TITLE_H - 38;
+    KRect track, thumb;
+    if (scrollbar_rects(pw, &track, &thumb)) {
+        ksurf_fill(pw->buf.buf, track, (KColor){30, 30, 35});
+        ksurf_fill(pw->buf.buf, thumb, (KColor){80, 85, 90});
+    }
+}
 
-    if (playlist_count(pw->playlist) <= visible_items(pw))
-        return;
-
-    ksurf_fill(buf, KRECT(sb_x, sb_y, 8, sb_h), (KColor){30, 30, 35});
-
-    double ratio =
-        (double)visible_items(pw) / KA_MAX(1, playlist_count(pw->playlist));
-    int thumb_h = KA_MAX(10, (int)(sb_h * ratio));
-    int thumb_y = sb_y;
-    if (max_scroll(pw) > 0)
-        thumb_y = sb_y + (int)((double)pw->scroll_offset / max_scroll(pw) *
-                               (sb_h - thumb_h));
-    ksurf_fill(buf, KRECT(sb_x, thumb_y, 8, thumb_h), (KColor){80, 85, 90});
+static void scroll_thumb_to(PlaylistWindow *pw, KRect track, KRect thumb, int y)
+{
+    int travel = track.h - thumb.h;
+    int top = KA_CLAMP(y - pw->thumb_grab_y - track.y, 0, travel);
+    pw->scroll_offset = (int)lround((double)top * max_scroll(pw) / travel);
 }
 
 static void draw_info(PlaylistWindow *pw)
@@ -438,19 +448,37 @@ void playlist_window_mouse_press(PlaylistWindow *pw, int x, int y,
         }
     }
 
-    /* Scrollbar click - jump scroll */
-    if (button == SDL_BUTTON_LEFT && lx >= pw->buf.w - 15 && ly >= list_y &&
-        ly < list_y + list_h && list_h > 0) {
-        double ratio = (double)(ly - list_y) / list_h;
-        pw->scroll_offset = (int)(ratio * max_scroll(pw));
+    KRect track, thumb;
+    if (button == SDL_BUTTON_LEFT && scrollbar_rects(pw, &track, &thumb) &&
+        krect_contains(track, lx, ly)) {
+        if (krect_contains(thumb, lx, ly)) {
+            pw->thumb_grab_y = ly - thumb.y;
+        } else {
+            pw->thumb_grab_y = thumb.h / 2;
+            scroll_thumb_to(pw, track, thumb, ly);
+        }
+        SDL_CaptureMouse(SDL_TRUE);
     }
 
     if (button == SDL_BUTTON_RIGHT)
         show_context_menu(pw);
 }
 
-void playlist_window_drag_resize(PlaylistWindow *pw)
+void playlist_window_mouse_move(PlaylistWindow *pw, int y)
 {
+    if (pw->thumb_grab_y >= 0) {
+        KRect track, thumb;
+        if (scrollbar_rects(pw, &track, &thumb)) {
+            int lx, ly;
+            kwin_logical(pw->player, 0, y, &lx, &ly);
+            scroll_thumb_to(pw, track, thumb, ly - MAIN_H);
+        } else {
+            playlist_window_end_drag(pw);
+        }
+        return;
+    }
+    if (!pw->resizing)
+        return;
     int gx, gy;
     SDL_GetGlobalMouseState(&gx, &gy);
     int min_w, min_h;
@@ -460,9 +488,10 @@ void playlist_window_drag_resize(PlaylistWindow *pw)
                       KA_MAX(min_h, pw->resize_start_h + gy - pw->resize_start_y));
 }
 
-void playlist_window_end_resize(PlaylistWindow *pw)
+void playlist_window_end_drag(PlaylistWindow *pw)
 {
-    if (pw->resizing) {
+    if (pw->resizing || pw->thumb_grab_y >= 0) {
+        pw->thumb_grab_y = -1;
         pw->resizing = false;
         SDL_CaptureMouse(SDL_FALSE);
     }
@@ -470,10 +499,8 @@ void playlist_window_end_resize(PlaylistWindow *pw)
 
 void playlist_window_wheel(PlaylistWindow *pw, int delta_y)
 {
-    if (delta_y > 0)
-        pw->scroll_offset = KA_MAX(0, pw->scroll_offset - 3);
-    else
-        pw->scroll_offset = KA_MIN(max_scroll(pw), pw->scroll_offset + 3);
+    long long offset = pw->scroll_offset - 3LL * delta_y;
+    pw->scroll_offset = (int)KA_CLAMP(offset, 0, max_scroll(pw));
 }
 
 void playlist_window_drop(PlaylistWindow *pw, const char *path)

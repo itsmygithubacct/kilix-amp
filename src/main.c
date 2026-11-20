@@ -116,7 +116,7 @@ static void layout_player(App *app)
 static void on_pl_toggle(void *ud, bool visible)
 {
     App *app = ud;
-    playlist_window_end_resize(&app->pl_win);
+    playlist_window_end_drag(&app->pl_win);
     main_window_set_pl_visible(&app->main_win, visible);
     layout_player(app);
     config_set_pl_visible(app->config, visible);
@@ -510,8 +510,8 @@ static void dispatch_event(App *app, const SDL_Event *ev)
                                    ev->motion.y);
         if (wid == eq_id || app->eq_win.kw.dragging)
             eq_window_mouse_move(&app->eq_win, ev->motion.x, ev->motion.y);
-        if (app->pl_win.resizing)
-            playlist_window_drag_resize(&app->pl_win);
+        if (wid == main_id || app->pl_win.resizing)
+            playlist_window_mouse_move(&app->pl_win, ev->motion.y);
         if (wid == ed_id || app->ed_win.kw.dragging || app->ed_win.resizing)
             editor_window_mouse_move(&app->ed_win, ev->motion.x,
                                      ev->motion.y);
@@ -529,7 +529,7 @@ static void dispatch_event(App *app, const SDL_Event *ev)
             eq_window_mouse_release(&app->eq_win, ev->button.x,
                                     ev->button.y);
         if (ev->button.button == SDL_BUTTON_LEFT)
-            playlist_window_end_resize(&app->pl_win);
+            playlist_window_end_drag(&app->pl_win);
         if (wid == ed_id || app->ed_win.kw.dragging ||
             app->ed_win.resizing || app->ed_win.selecting)
             editor_window_mouse_release(&app->ed_win, ev->button.x,
@@ -594,6 +594,8 @@ static void dispatch_event(App *app, const SDL_Event *ev)
             break;
         case SDL_WINDOWEVENT_FOCUS_LOST:
             kw->active = false;
+            if (wid == main_id)
+                playlist_window_end_drag(&app->pl_win);
             break;
         case SDL_WINDOWEVENT_CLOSE:
             if (wid == main_id)
