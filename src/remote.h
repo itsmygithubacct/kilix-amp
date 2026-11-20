@@ -31,6 +31,8 @@ void remote_command(Remote *r, const char *command);
 void remote_number(Remote *r, const char *command, const char *key, double value);
 void remote_boolean(Remote *r, const char *command, const char *key, bool value);
 void remote_play_index(Remote *r, int index);
+/* Append paths to the shared queue and play the first accepted entry. */
+bool remote_open_paths(Remote *r, const char *const *paths, int count);
 void remote_eq_band(Remote *r, int band, double gain);
 void remote_free(Remote *r);
 #endif

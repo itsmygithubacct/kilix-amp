@@ -122,11 +122,6 @@ static void render_visible_windows(App *app)
         editor_window_render(&app->ed_win);
 }
 
-static void queue_current(App *app)
-{
-    remote_command(app->remote, "play");
-}
-
 static void on_play(void *ud)
 {
     App *app = ud;
@@ -164,14 +159,8 @@ static void on_eject(void *ud)
     char **files = filedialog_open_files("Open Audio Files", &count);
     if (!files)
         return;
-    int before = playlist_count(app->playlist);
-    playlist_add_files(app->playlist, (const char **)files, count);
-    int added = playlist_count(app->playlist) - before;
-    if (playlist_current_index(app->playlist) < 0 && added > 0)
-        playlist_set_current(app->playlist, before);
-    if (added > 0)
+    if (remote_open_paths(app->remote, (const char *const *)files, count))
         show_playlist(app);
-    queue_current(app);
     for (int i = 0; i < count; i++)
         free(files[i]);
     free(files);
@@ -908,17 +897,8 @@ int main(int argc, char **argv)
     }
 
     /* --- Load files from command line --- */
-    int first_added = playlist_count(app->playlist);
-    for (int i = 0; i < n_files; i++) {
-        if (ka_is_dir(files[i]))
-            playlist_add_directory(app->playlist, files[i], true);
-        else if (ka_is_file(files[i]))
-            playlist_add_file(app->playlist, files[i]);
-    }
-    if (playlist_count(app->playlist) > first_added) {
+    if (remote_open_paths(app->remote, files, n_files))
         show_playlist(app);
-        remote_play_index(app->remote, first_added);
-    }
 
     /* --- Main loop --- */
     /* KILIXAMP_EXIT_AFTER_MS: quit cleanly after N ms (headless CI/smoke

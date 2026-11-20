@@ -113,7 +113,7 @@ char **filedialog_open_files(const char *title, int *count)
         char *qt = shell_quote(title);
         char *dd = default_dir_arg();
         char *cmd = ka_asprintf(
-            "zenity --file-selection --multiple --separator='\\n' %s"
+            "zenity --file-selection --multiple --separator='\n' %s"
             "--title=%s 2>/dev/null",
             dd, qt);
         result = run_zenity(cmd);

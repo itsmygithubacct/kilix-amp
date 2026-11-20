@@ -257,7 +257,7 @@ bool remote_poll(Remote *r, bool force)
     return true;
 }
 
-void remote_request(Remote *r, JsonBuf *request)
+static char *request_reply(Remote *r, JsonBuf *request)
 {
     json_kv_int(request, "protocol", CONTROL_PROTOCOL_MAX);
     json_obj_end(request);
@@ -273,9 +273,14 @@ void remote_request(Remote *r, JsonBuf *request)
         } else {
             r->error_until = 0;
         }
-        free(reply);
     }
     r->last_poll = 0;
+    return reply;
+}
+
+void remote_request(Remote *r, JsonBuf *request)
+{
+    free(request_reply(r, request));
 }
 
 static void queue_edit(void *ud, JsonBuf *request)
@@ -324,13 +329,64 @@ void remote_boolean(Remote *r, const char *cmd, const char *key, bool value)
     json_kv_bool(&j, key, value);
     remote_request(r, &j); json_free(&j);
 }
-void remote_play_index(Remote *r, int index)
+static void play_at_revision(Remote *r, int index, long long revision)
 {
     JsonBuf j = command("play");
     json_kv_int(&j, "index", index);
-    json_kv_int(&j, "queue_revision", r->revision);
+    json_kv_int(&j, "queue_revision", revision);
     remote_request(r, &j); json_free(&j);
 }
+void remote_play_index(Remote *r, int index)
+{
+    play_at_revision(r, index, r->revision);
+}
+
+/* Bind both the append position and the subsequent play to the service's
+ * revisions. Another controller may edit the queue while the picker is open. */
+static bool add_and_play(Remote *r, const char *path)
+{
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int first = playlist_count(r->playlist);
+        JsonBuf add = command("add");
+        json_kv_str(&add, "path", path);
+        json_kv_int(&add, "queue_revision", r->revision);
+        char *reply = request_reply(r, &add);
+        json_free(&add);
+        if (!reply) return false;
+
+        bool ok = false;
+        long long revision;
+        char code[32];
+        bool added = json_get_bool(reply, "ok", &ok) && ok &&
+                     json_get_int(reply, "queue_revision", &revision);
+        bool stale = json_get_str(reply, "error_code", code, sizeof(code)) &&
+                     strcmp(code, "STALE_QUEUE") == 0;
+        free(reply);
+        if (added) {
+            play_at_revision(r, first, revision);
+            return true;
+        }
+        if (!stale) return false;
+        /* A stale add made no change. request_reply refreshed the snapshot. */
+    }
+    return false;
+}
+
+bool remote_open_paths(Remote *r, const char *const *paths, int count)
+{
+    bool added = false;
+    for (int i = 0; i < count; i++) {
+        if (added) {
+            playlist_add_file(r->playlist, paths[i]);
+        } else {
+            char *path = realpath(paths[i], NULL);
+            if (path) added = add_and_play(r, path);
+            free(path);
+        }
+    }
+    return added;
+}
+
 void remote_eq_band(Remote *r, int band, double gain)
 {
     JsonBuf j = command("eq_band");

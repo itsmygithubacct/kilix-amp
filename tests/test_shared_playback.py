@@ -274,6 +274,29 @@ class SharedPlayback(unittest.TestCase):
         self.assertEqual(status["pid"], service.pid)
         self.assertEqual(status["index"], 1)
 
+    def test_gui_opens_first_selected_track_after_another_client_appends(self):
+        self.start(self.tone)
+        self.playing()
+        selection = self.path / "selection"
+        os.mkfifo(selection)
+        picker = self.path / "zenity"
+        picker.write_text('#!/bin/sh\nexec timeout 6 cat "$PICKER_INPUT"\n')
+        picker.chmod(0o700)
+        env = dict(self.display(), PICKER_INPUT=str(selection),
+                   PATH=str(self.path) + os.pathsep + os.environ["PATH"])
+        gui = self.spawn([str(AMP)], env)
+        window = self.window(gui, env)
+        subprocess.run(["xdotool", "key", "--window", window, "l"], env=env,
+                       check=True, capture_output=True)
+        writer = wait_for(lambda: os.open(selection, os.O_WRONLY | os.O_NONBLOCK))
+        with os.fdopen(writer, "w") as answer:
+            self.assertTrue(self.command("add", path=str(self.tone))["ok"])
+            answer.write(f"{self.other}\n{self.tone}\n")
+        wait_for(lambda: self.command("state")["count"] == 4)
+        status = self.playing()
+        self.assertEqual(status["file"], str(self.other))
+        self.assertEqual(status["index"], 2)
+
     def test_gui_autostarts_service_and_other_gui_attaches(self):
         env = dict(self.display(), KILIXAMP_EXIT_AFTER_MS="1600")
         first = self.spawn([str(AMP), str(self.tone)], env)
