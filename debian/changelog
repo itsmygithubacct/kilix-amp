@@ -1,3 +1,10 @@
+kilix-amp (0.20261029+packaging4) UNRELEASED; urgency=medium
+
+  * Offer model setup for a missing EnCodec file profile and retry the track
+    after a successful installation.
+
+ -- itsmygithubacct <itsmygithubacct@users.noreply.github.com>  Sun, 22 Nov 2026 23:00:00 +0000
+
 kilix-amp (0.20261029+packaging3) UNRELEASED; urgency=medium
 
   * Ship the docked player with kilix-mpv for ordinary playback and the

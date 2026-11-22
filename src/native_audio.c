@@ -987,6 +987,7 @@ AudioSourceInfo native_audio_source_info(const NativeAudioEngine *ae)
         result.channels = info.channels;
         result.samples = info.samples;
         result.profile = info.profile;
+        result.setup_profile = info.setup_profile;
         result.bitrate = info.codebooks * (info.profile == 1u ? 750u : 1500u);
         result.ended = info.ended;
         result.degraded = info.degraded;

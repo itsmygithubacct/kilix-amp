@@ -10,7 +10,7 @@ typedef struct KaEncodec KaEncodec;
 typedef enum { KA_ENCODEC_FILE = 0, KA_ENCODEC_STDIN = 1, KA_ENCODEC_SOCKET = 2 } KaEncodecKind;
 
 typedef struct {
-    uint32_t sample_rate, channels, codebooks, profile;
+    uint32_t sample_rate, channels, codebooks, profile, setup_profile;
     uint64_t samples, position;
     bool ready, ended, failed, seeking;
     bool live, degraded, wire_valid;
@@ -36,6 +36,7 @@ KaEncodec *ka_encodec_open_source(KaEncodecKind kind, const char *path, int inpu
  * should pass their actual resolved root when storage is relocated. */
 KaEncodec *ka_encodec_open_installed_source(KaEncodecKind kind, const char *path, int input_fd,
     const char *content_root, unsigned int threads);
+const char *ka_encodec_asset_id(unsigned int profile);
 void ka_encodec_poll(KaEncodec *source);
 /* >0 frames, 0 buffering, -1 EOF, -2 error. PCM is interleaved float. */
 int ka_encodec_read(KaEncodec *source, float *pcm, size_t scalar_capacity,

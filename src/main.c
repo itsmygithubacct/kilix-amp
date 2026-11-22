@@ -13,6 +13,7 @@
 #include <time.h>
 
 #include "remote.h"
+#include "model_setup.h"
 #include "common.h"
 #include "config.h"
 #include "consts.h"
@@ -39,6 +40,7 @@ typedef struct {
     PlaylistWindow pl_win;
     EditorWindow ed_win;
     DockManager dock;
+    ModelSetup setup;
     bool running;
 } App;
 
@@ -148,6 +150,7 @@ static void render_visible_windows(App *app)
 static void on_play(void *ud)
 {
     App *app = ud;
+    model_setup_forget(&app->setup);
     remote_command(app->remote, "play");
 }
 
@@ -160,6 +163,10 @@ static void on_pause(void *ud)
 static void on_stop(void *ud)
 {
     App *app = ud;
+    model_setup_forget(&app->setup);
+    Track *track = playlist_current_track(app->playlist);
+    app->setup.entry = track ? track->entry_id : 0;
+    app->setup.service = playlist_snapshot_pid(app->playlist);
     remote_command(app->remote, "stop");
 }
 
@@ -308,6 +315,7 @@ static void on_quit_requested(void *ud)
 static void on_track_activated(void *ud, int idx)
 {
     App *app = ud;
+    model_setup_forget(&app->setup);
     remote_play_index(app->remote, idx);
 }
 
@@ -762,6 +770,7 @@ int main(int argc, char **argv)
     free(probe);
 
     App *app = calloc(1, sizeof(*app));
+    if (app) app->setup.channel = -1;
     if (!app)
         abort();
     app->running = true;
@@ -936,8 +945,10 @@ int main(int argc, char **argv)
         while (SDL_PollEvent(&ev))
             dispatch_event(app, &ev);
 
-        if (remote_poll(app->remote, false))
+        if (remote_poll(app->remote, false)) {
             sync_playback(app);
+            model_setup_poll(&app->setup, app->remote, app->main_win.kw.win);
+        }
 
         uint32_t now = SDL_GetTicks();
         if (now - last_scroll >= 1000 / SCROLL_FPS) {
@@ -954,6 +965,7 @@ int main(int argc, char **argv)
     /* --- Save config on exit --- */
     save_state(app);
 
+    model_setup_forget(&app->setup);
     remote_free(app->remote);
     playlist_window_destroy(&app->pl_win);
     main_window_destroy(&app->main_win);

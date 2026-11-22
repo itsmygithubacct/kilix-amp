@@ -157,6 +157,7 @@ static bool start(Remote *r, bool live_stdin)
         if (daemon < 0) _exit(1);
         if (daemon > 0) _exit(0);
         unsetenv("KILIXAMP_EXIT_AFTER_MS");
+        unsetenv("KILIX_AMP_MODEL_SETUP_SOCKET");
         close_range(3, ~0U, 0);
         int input = live_stdin ? -1 : open("/dev/null", O_RDONLY);
         if (input >= 0) { dup2(input, 0); if (input > 2) close(input); }
@@ -234,6 +235,8 @@ static void absorb(Remote *r, const char *reply)
     if (json_get_num(reply, "channels", &n)) r->tags.channels = (int)n;
     if (json_get_num(reply, "bitrate", &n)) r->tags.bitrate = (int)n;
     r->source = (AudioSourceInfo){0};
+    if (json_get_num(reply, "setup_profile", &n) && (n == 1 || n == 2))
+        r->source.setup_profile = (unsigned int)n;
     json_get_bool(reply, "live", &r->source.live);
     json_get_bool(reply, "ready", &r->source.ready);
     json_get_bool(reply, "seekable", &r->source.seekable);

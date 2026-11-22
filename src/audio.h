@@ -32,7 +32,7 @@ typedef struct {
 
 typedef struct {
     bool encodec, ready, buffering, seekable, live;
-    unsigned int sample_rate, channels, bitrate, profile;
+    unsigned int sample_rate, channels, bitrate, profile, setup_profile;
     uint64_t samples;
     bool ended, degraded, wire_valid, reconnect_required;
     uint64_t wire_pts_ms, wire_epoch;

@@ -213,6 +213,34 @@ KaEncodec *ka_encodec_open_installed_source(KaEncodecKind kind, const char *path
     return open_source(kind, path, input_fd, content_root, "", threads, true);
 }
 
+const char *ka_encodec_asset_id(unsigned int profile)
+{
+    if (profile == 1u) return "encodec-24khz-stateful";
+    if (profile == 2u) return "encodec-48khz-frame";
+    return NULL;
+}
+
+#ifdef KA_WITH_ENCODEC
+/* Prefer an existing desktop installation, including one needing repair.
+ * New profiles share the store used by Kilix Model Setup. */
+static bool missing_model(const char *root, unsigned int profile)
+{
+    char path[PATH_MAX];
+    const char *asset = ka_encodec_asset_id(profile);
+    if (!asset) return false;
+    int length = snprintf(path, sizeof(path), "%s/assets/%s", root, asset);
+    struct stat st;
+    return length > 0 && (size_t)length < sizeof(path) && lstat(path, &st) < 0
+        && errno == ENOENT;
+}
+
+static const char *model_root(const char *primary, unsigned int profile)
+{
+    const char *shared = getenv("KILIX_ENCODEC_MODEL_ROOT");
+    return shared && shared[0] == '/' && missing_model(primary, profile) ? shared : primary;
+}
+#endif
+
 static bool valid_info(const Header *header, bool live)
 {
     bool metadata = live
@@ -249,8 +277,11 @@ void ka_encodec_poll(KaEncodec *source)
         if (header.kind == REPLY_ERROR && header.bytes == 0u && header.result >= 1u
             && header.result <= (source->info.live ? LIVE_ERR_ENDPOINT : 6u)
             && header.position == 0u && header.samples == 0u && header.rate == 0u && header.channels == 0u
-            && header.profile == 0u && header.codebooks == 0u && header.reserved == 0u
+            && (header.profile == 0u || (!source->info.live && !source->info.ready
+                && header.result == 2u && ka_encodec_asset_id(header.profile)))
+            && header.codebooks == 0u && header.reserved == 0u
             && header.wire_pts_ms == 0u && header.wire_epoch == 0u) {
+            source->info.setup_profile = header.profile;
             fail(source, header.result); return;
         }
         if (!valid_info(&header, source->info.live)) { fail(source, 5u); return; }
@@ -401,14 +432,19 @@ static int await_io(short events)
     return result > 0 && !(item.revents & (POLLERR | POLLHUP | POLLNVAL)) ? 0 : -1;
 }
 
-static void worker_error(uint64_t generation, uint32_t result)
+static void worker_failure(uint64_t generation, uint32_t result, unsigned int setup_profile)
 {
     Header response = {0};
     response.magic = MAGIC; response.version = WIRE_VERSION; response.kind = REPLY_ERROR;
-    response.generation = generation; response.result = (uint32_t)result;
+    response.generation = generation; response.result = result; response.profile = setup_profile;
     while (send_message(WORKER_FD, &response, NULL) == 0) {
         if (await_io(POLLOUT) != 0) { break; }
     }
+}
+
+static void worker_error(uint64_t generation, uint32_t result)
+{
+    worker_failure(generation, result, 0u);
 }
 
 static uint64_t monotonic_ms(void)
@@ -572,7 +608,7 @@ static int worker_live(const Header *request, char *const paths[3])
         options.codebooks = info.codebooks;
         if (installed) {
             kenc_installed_assets *assets = NULL;
-            result = kenc_installed_assets_open(&assets, KENC_FILE_PROFILE_MONO, paths[1], 120000u, admission_canceled, NULL);
+            result = kenc_installed_assets_open(&assets, KENC_FILE_PROFILE_MONO, model_root(paths[1], KENC_FILE_PROFILE_MONO), 120000u, admission_canceled, NULL);
             if (result == KENC_OK) { result = kenc_model_load_fds(&model, kenc_installed_assets_files(assets)); }
             kenc_installed_assets_free(assets);
         } else { result = kenc_model_load(&model, paths[1]); }
@@ -682,6 +718,7 @@ int ka_encodec_worker_main(void)
     if ((request.reserved & 0xffu) != KA_ENCODEC_FILE) { return worker_live(&request, paths); }
     int input = open(paths[0], O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
     kenc_file_source *source = NULL; kenc_file_info info;
+    unsigned int setup_profile = 0u;
     kenc_result result = KENC_ERR_INVALID;
     if (input >= 0 && installed) {
         uint8_t header[KENC_FILE_HEADER_BYTES];
@@ -691,7 +728,17 @@ int ka_encodec_worker_main(void)
         if (result == KENC_OK && info.flags != 0u) { result = KENC_ERR_PROTOCOL; }
         kenc_installed_assets *assets = NULL;
         if (result == KENC_OK) {
-            result = kenc_installed_assets_open(&assets, info.profile, paths[1], 120000u, admission_canceled, NULL);
+            const char *root = model_root(paths[1], info.profile);
+            result = kenc_installed_assets_open(&assets, info.profile, root, 120000u, admission_canceled, NULL);
+            if (result == KENC_ERR_MODEL && missing_model(root, info.profile)) {
+                /* A plausible header alone must never trigger a software offer. */
+                kenc_file_reader *reader = NULL;
+                kenc_file_info checked;
+                kenc_result check = kenc_file_reader_create(&reader, input, &checked);
+                if (check != KENC_OK) result = check;
+                else if (checked.profile == info.profile) setup_profile = info.profile;
+                kenc_file_reader_free(reader);
+            }
         }
         if (result == KENC_OK) {
             const kenc_asset_set *files = kenc_installed_assets_files(assets);
@@ -703,7 +750,7 @@ int ka_encodec_worker_main(void)
         result = kenc_file_source_create(&source, input, paths[1], paths[2], (uint8_t)request.result, &info);
     }
     if (input >= 0) { close(input); }
-    if (result != KENC_OK) { worker_error(request.generation, result); return 1; }
+    if (result != KENC_OK) { worker_failure(request.generation, result, setup_profile); return 1; }
     float *pcm = malloc(96000u * sizeof(*pcm));
     if (pcm == NULL) { kenc_file_source_free(source); worker_error(request.generation, KENC_ERR_MEMORY); return 1; }
     Header response = {0};

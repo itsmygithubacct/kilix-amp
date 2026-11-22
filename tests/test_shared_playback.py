@@ -630,6 +630,36 @@ class SharedPlayback(unittest.TestCase):
             self.assertEqual(self.playing()["pid"], child.pid)
 
     @unittest.skipUnless(os.environ.get("KILIX_TEST_ENCODEC_FILE"),
+                         "set KILIX_TEST_ENCODEC_FILE to a valid local file")
+    def test_only_valid_missing_profile_offers_setup_and_can_defer(self):
+        path = Path(os.environ["KILIX_TEST_ENCODEC_FILE"]).resolve()
+        broken = self.path / "truncated.kenc"
+        broken.write_bytes(path.read_bytes()[:64])
+        host = self.path / "setup.sock"
+        self.env.update(KILIX_CONTENT_ROOT=str(self.path / "legacy"),
+                        KILIX_ENCODEC_MODEL_ROOT=str(self.path / "new"),
+                        KILIX_AMP_MODEL_SETUP_SOCKET=str(host), SDL_AUDIODRIVER="dummy")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as setup:
+            setup.bind(str(host))
+            setup.settimeout(5)
+            env = self.display()
+            gui = self.spawn([str(AMP), str(broken)], env)
+            self.window(gui, env)
+            wait_for(lambda: self.command("state")["source_error_code"] != 0)
+            self.assertEqual(self.command("state")["setup_profile"], 0)
+            self.command("open", source_type="file", path=str(path))
+            profile, peer = setup.recvfrom(2)
+            self.assertIn(profile, (bytes([1]), bytes([2])))
+            self.assertEqual(self.command("state")["setup_profile"], profile[0])
+            setup.sendto(bytes([0]), peer)
+            setup.settimeout(.4)
+            with self.assertRaises(TimeoutError):
+                setup.recvfrom(2)
+            self.assertFalse((self.path / "new").exists())
+            self.command("open", source_type="file", path=str(self.tone))
+            self.assertEqual(self.playing()["backend"], "kilix-mpv")
+
+    @unittest.skipUnless(os.environ.get("KILIX_TEST_ENCODEC_FILE"),
                          "set KILIX_TEST_ENCODEC_FILE to an admitted local fixture")
     def test_switch_between_mpv_and_native_encodec_preserves_session(self):
         self.env["SDL_AUDIODRIVER"] = "dummy"

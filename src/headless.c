@@ -286,6 +286,7 @@ static void hl_write_status(Headless *h, JsonBuf *reply)
         json_kv_str(reply, "source_type", file && *file ? kind : "none");
         json_kv_str(reply, "codec", info.encodec ? "encodec" : file && *file ? "pcm" : "none");
         json_kv_int(reply, "profile", info.profile);
+        json_kv_int(reply, "setup_profile", info.setup_profile);
         json_kv_int(reply, "sample_rate", info.sample_rate);
         json_kv_int(reply, "channels", info.channels);
         json_kv_int(reply, "bitrate", info.bitrate);
