@@ -75,6 +75,7 @@ seek percentage from it.
 | `source_type` | `none`, `file`, `encodec-stdin` or `encodec-unix` |
 | `codec` | `none`, `pcm` (ordinary decoded audio) or `encodec` |
 | `profile` | EnCodec 1 for mono, 2 for stereo; zero when unknown |
+| `setup_profile` | A verified local file needs a missing model. 1 selects 24 kHz mono, 2 selects 48 kHz stereo. Zero or an absent field means there is no setup offer. |
 | `sample_rate`, `channels`, `bitrate` | Verified source metadata; bitrate is bits/s |
 | `threads` | Selected native inference threads, 1 or 2; zero before selection |
 | `ready` | Source is loaded and available to the shared audio path |

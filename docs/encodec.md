@@ -22,7 +22,10 @@ kilix-content's `Installer.asset_destination()` places it,
 `<content root>/assets/<asset id>`, and match the catalog's manifest.
 `KILIX_CONTENT_ROOT` selects the content storage root; otherwise Amp uses the
 account's NSS home plus `.local/gpu_terminal/kilix/data/desktop-apps`. A host
-that relocates Kilix storage must pass its resolved content root.
+that relocates Kilix storage must pass its resolved content root. The packaged
+Kilix 95 desktop also supplies its Model Setup store in
+`KILIX_ENCODEC_MODEL_ROOT`. Amp uses that store when the requested profile
+has no installation in the original desktop root.
 Receipts are only read, never written, from the directory
 `kilix_license.receipt_store_root()` names: `$KILIX_LICENSE_RECEIPTS` if set,
 otherwise `$GPU_TERMINAL_HOME/license-receipts`, otherwise
@@ -35,8 +38,15 @@ storage must give Amp the same `KILIX_LICENSE_RECEIPTS` or `GPU_TERMINAL_HOME`
 (and `HOME`) as the licence screen that filed the receipts. The store must be
 the user's own directory with no group or other access.
 `KILIX_ENCODEC_THREADS` accepts `1` or `2` (default).
-Amp never installs or downloads a model. Missing receipts, undeclared assets,
-or incompatible bytes produce an error. The helper verifies the full admitted
+On Plebian-OS 0.2.4, opening a valid local file with a missing profile offers
+**Set up model** or **Later**. Model Setup shows the model and shared converter
+downloads, handles licence and administrator prompts, and prepares the model.
+Amp retries the track after success if it is still selected. Headless clients
+can read `setup_profile` in the version-2 state or run
+`kilix models install encodec-24khz-stateful` or
+`kilix models install encodec-48khz-frame` in a terminal.
+Prepared profiles play offline. Missing receipts, undeclared assets, or
+incompatible bytes produce an error. The helper verifies the full admitted
 population, including its notices, then passes only the exact 9/4 native files
 as sealed descriptors. Native compiled graph hashes and runtime checks still
 apply. Admission repeats for every model load; graph-directory environment
